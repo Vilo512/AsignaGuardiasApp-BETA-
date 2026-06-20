@@ -2,7 +2,7 @@
 **Versión PRD auditada:** 1.2  
 **Codebase auditado:** `app.js` (4 600+ líneas, monolítico vanilla JS + Supabase)  
 **Fecha de última revisión:** Junio 2026  
-**Estado general:** 1 divergencia activa, 5 funciones no implementadas. 18 ítems resueltos o alineados con PRD v1.2. 1 ítem nuevo (W4-B) pendiente de implementación futura.
+**Estado general:** 1 divergencia activa, 4 funciones no implementadas. 19 ítems resueltos o alineados con PRD v1.2. 1 ítem nuevo (W4-B) pendiente de implementación futura.
 
 ---
 
@@ -33,7 +33,7 @@ Este archivo es la **memoria de trabajo persistente** del Engineering Lead entre
 | W9 | ⚠️ Diverge | §8 | Panel de turno muestra "Turno de Nadie" en meses pasados para admin/delegado | `resuelto` |
 | W10 | ⚠️ Diverge | §8 / §9 | Subasta no aislada por plan — mezcla residentes, huecos y caché entre R1/R2/R3 | `resuelto` |
 | W11 | ⚠️ Diverge | §8 | `_getAnalisisFestivosImpl` usaba `getComputedShifts` para contar huecos cubiertos — inconsistente con `state.shifts` en `renderAlertaCargaMensual` y `ejecutarAsignacionForzosa`; mes atascado con "0 guardias" | `resuelto` |
-| N1 | ❌ Falta | §12 | Sistema de notificaciones in-app completo | `pendiente` |
+| N1 | ✅ Hecho | §12 | Sistema de notificaciones in-app completo | `resuelto` |
 | N2 | ❌ Falta | §15 / §8.4 | Registro persistente de huecos sin candidato válido | `pendiente` |
 | N3 | ❌ Falta | §5.1 | Calendario automático de huecos desde patrón configurable | `pendiente` |
 | N4 | ❌ Falta | §4 / D-02 | Importación de festivos desde fuente oficial | `pendiente` |
@@ -543,7 +543,7 @@ Llamadas posteriores para el mismo mes+plan leen desde el snapshot (sin re-evalu
 ### N1 — Sistema de notificaciones in-app completo
 **Sección PRD:** §12  
 **Impacto:** Alto — bloquea el loop de comunicación de §8.1, §8.4 y §11  
-**Estado:** `pendiente`
+**Estado:** `resuelto`
 
 **Diagnóstico:**
 Existe un inbox básico de mercadillo en la pestaña "Merc". No existe tabla `Notificaciones` en Supabase, no hay badge de no-leídas, no hay panel propio. Eventos sin cobertura:
@@ -578,10 +578,56 @@ Existe un inbox básico de mercadillo en la pestaña "Merc". No existe tabla `No
 **Dependencias posteriores:** N2
 
 ### Resultado
-**Estado final:** `pendiente`  
-**Decisiones tomadas:** —  
-**Efectos secundarios detectados:** —  
-**Archivos modificados:** —
+**Estado final:** `resuelto`
+
+**Decisiones tomadas:**
+- Tabla `notificaciones` en Supabase: `id uuid PK`, `usuario_id uuid FK→auth.users`, `tipo text CHECK(enum)`, `payload jsonb`, `leida bool DEFAULT false`, `timestamp timestamptz DEFAULT now()`. RLS: SELECT solo propio, INSERT cualquier autenticado (necesario para que un usuario notifique a otro), UPDATE solo propio.
+- Índice UNIQUE en `(usuario_id, payload->>'year', payload->>'month') WHERE tipo='turno_asignacion'` para evitar duplicados de turno al recargar.
+- **`insertNotificacion(usuarioId, tipo, payload)`** — fire-and-forget; ignora errores de red silenciosamente para no romper el flujo principal. Si el destinatario es el usuario actual, recarga el panel inmediatamente.
+- **`loadNotificaciones()`** — cargada al arrancar sesión (en `loadState`); trae las últimas 60 más recientes ordenadas desc.
+- **Bell icon** con Tabler Icons (CDN), badge rojo con contador en el header. Solo visible cuando `estado === 'aprobado'`. Controlado en `renderUserHeader()`.
+- **Panel flotante** `position:fixed` anclado a `top: var(--header-h)`, cierre al click fuera. Inline "Aceptar/Rechazar" buttons en notificaciones de tipo `propuesta_mercadillo` que llaman a `processTrade` directamente.
+- **Click en notificación**: marca leída, cierra panel, navega a la vista correcta cambiando `curDate` si el payload tiene `year/month`.
+- **`maybeNotifyTurnChange(y, m)`** — dedup de sesión con `_lastNotifTurnKey`; llamada después de `toggleShift`, `userSkipTurn`, `adminSkipTurn`, `adminGrantTurn`.
+- **`_notifyNewTrade(trade)`** — llamada en los tres creadores de trade; solo para trades `pending` a no-Externo.
+- **`_notifyTradeResolved(id)`** — llamada en `processTrade` después de `saveState()`; solo notifica al requester si es distinto del usuario actual.
+- **`forzarCierreSubasta`** — notifica `ventana_voluntaria` a todos los `planResidentes` del análisis al cerrar la subasta forzosamente.
+- **`ejecutarAsignacionForzosa`** — notifica `guardia_forzada` al residente por cada guardia asignada; notifica `hueco_sin_candidato` a todos los admin/delegado cuando `huecosImpossibles.length > 0`.
+
+**Tipos de notificación — colores implementados:**
+| Tipo | Icono | Fondo círculo | Color icono |
+|---|---|---|---|
+| `turno_asignacion` | 🕐 | #B5D4F4 | #0C447C |
+| `guardia_forzada` | ⚠️ | #F5C4B3 | #993C1D |
+| `ventana_voluntaria` | 📅 | #B5D4F4 | #0C447C |
+| `propuesta_mercadillo` | 🔄 | #C0DD97 | #3B6D11 |
+| `propuesta_resuelta` | ✅ | #C0DD97 | #3B6D11 |
+| `hueco_sin_candidato` | 🚨 | #F7C1C1 | #A32D2D |
+
+**SQL a ejecutar en el dashboard de Supabase (proyecto elmpelhplacgkgfuiwno):**
+```sql
+CREATE TABLE public.notificaciones (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    usuario_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    tipo TEXT NOT NULL CHECK (tipo IN ('turno_asignacion','guardia_forzada','ventana_voluntaria','propuesta_mercadillo','propuesta_resuelta','hueco_sin_candidato')),
+    payload JSONB NOT NULL DEFAULT '{}',
+    leida BOOLEAN NOT NULL DEFAULT false,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX notificaciones_usuario_ts_idx ON public.notificaciones(usuario_id, timestamp DESC);
+CREATE UNIQUE INDEX notificaciones_turno_unique ON public.notificaciones(usuario_id, (payload->>'year'), (payload->>'month')) WHERE tipo = 'turno_asignacion';
+ALTER TABLE public.notificaciones ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "read_own" ON public.notificaciones FOR SELECT USING (auth.uid() = usuario_id);
+CREATE POLICY "insert_authenticated" ON public.notificaciones FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "update_own" ON public.notificaciones FOR UPDATE USING (auth.uid() = usuario_id) WITH CHECK (auth.uid() = usuario_id);
+```
+
+**Efectos secundarios detectados:**
+- `_notifyNewTrade` es fire-and-forget; si la tabla aún no existe, el error queda silenciado en consola y la operación de trade continúa sin problema.
+- `maybeNotifyTurnChange` usa dedup de sesión (`_lastNotifTurnKey`); en la primera carga del mes, dispara siempre para el titular actual — notificaciones de turno duplicadas por sesión son posibles si el mismo usuario recarga con el mismo turno activo, pero el índice UNIQUE de Supabase lo previene a nivel de BD.
+- No implementa Supabase Realtime (suscripción push) — recarga manual al navegar/actuar. Extensión futura.
+
+**Archivos modificados:** `app.js` (módulo NOTIFICACIONES ~170 líneas + hooks en 11 funciones existentes), `index.html` (Tabler Icons CDN, bell button, panel div, cache-buster v=1.4), `style.css` (bloque NOTIFICACIONES ~130 líneas).
 
 ---
 
@@ -759,3 +805,4 @@ Para referencia del agente: estas secciones son conformes al PRD v0.7. No requie
 | v2.2 | Mayo 2026 | W8 resuelto: ventana voluntaria exenta del guard de turno solo para el servicio en subasta. W9 resuelto: banner admin muestra estado real (subasta/completado) cuando `turnUser === null`; botón "Forzosa" recuperado del código muerto e integrado en el panel admin. |
 | v2.3 | Junio 2026 | W11 nuevo y resuelto: inconsistencia `getComputedShifts`/`state.shifts` en `_getAnalisisFestivosImpl` causaba mes atascado con "0 guardias". Fix en dos partes: (A) revertir a `state.shifts` para contar huecos cubiertos; (B) introducir `state.subastaSnapshot[y_m_plan]` que congela exceso/nominados/svcNombre la primera vez que `rondaTerminada=true`, evitando re-evaluación completa y el bug de `fechaFinRonda` persistido. `adminResetMonth` y `adminVaciarGeneracion` borran el snapshot; `resetSubastaEstado` también. |
 | v2.4 | Junio 2026 | N5 rediseñado: concepto "Activar subasta ya" (ejecución inmediata) reemplazado por "Propuesta de asignación automática" (§8.5, revisión admin antes de ejecutar, no destructiva hasta confirmar) + "Forzamiento de turno por inactividad" (§8.6, umbral configurable, disponible para admin y delegado). PRD actualizado a v1.3. |
+| v2.5 | Junio 2026 | N1 resuelto: sistema de notificaciones in-app completo. Tabla `notificaciones` en Supabase (6 tipos con RLS). Módulo JS (insertNotificacion, loadNotificaciones, markNotifRead, markAllNotifsRead, renderNotifPanel, toggleNotifPanel, maybeNotifyTurnChange, _notifyNewTrade, _notifyTradeResolved). Bell icon con badge en header. Panel flotante con acciones inline para mercadillo. Hooks en 11 funciones existentes. |

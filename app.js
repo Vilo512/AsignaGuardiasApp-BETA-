@@ -130,6 +130,9 @@ let showOnlyMine = false;
 let perfilHorasFiltroY = new Date().getFullYear();
 let perfilHorasFiltroM = new Date().getMonth(); // 0-indexed
 let promoConfig = { servicios: [] };
+let notificaciones = []; // Per-user, loaded from notificaciones table, NOT in state{}
+let notifPanelOpen = false;
+let _lastNotifTurnKey = null; // Session-level dedup key for turno_asignacion
 let globalProfiles = []; // Almacena las fechas de inicio/cambio de todos los residentes activos
 
 // ============================================================
@@ -269,6 +272,211 @@ async function saveState() {
   }
 }
 
+// ============================================================
+// MÓDULO: NOTIFICACIONES
+// Tabla Supabase: notificaciones (id uuid PK, usuario_id uuid FK→auth.users, tipo text, payload jsonb, leida bool, timestamp timestamptz)
+// ============================================================
+
+/** Inserts a notification for a user into the notificaciones table. Fire-and-forget; silently ignores errors (table may not exist yet). */
+async function insertNotificacion(usuarioId, tipo, payload) {
+    if (!usuarioId) return;
+    try {
+        await supabaseClient.from('notificaciones').insert({ usuario_id: usuarioId, tipo, payload, leida: false });
+        if (currentUserProfile && usuarioId === currentUserProfile.id) await loadNotificaciones();
+    } catch (e) { console.warn('[Notif] insert:', e?.message); }
+}
+
+/** Loads the most recent notifications for the current user from Supabase. */
+async function loadNotificaciones() {
+    if (!currentUserProfile?.id) return;
+    try {
+        const { data } = await supabaseClient.from('notificaciones').select('*').eq('usuario_id', currentUserProfile.id).order('timestamp', { ascending: false }).limit(60);
+        notificaciones = data || [];
+    } catch (e) { console.warn('[Notif] load:', e?.message); notificaciones = []; }
+    renderNotifBadge();
+    if (notifPanelOpen) renderNotifPanel();
+}
+
+/** Marks one notification as read locally and in Supabase. */
+async function markNotifRead(id) {
+    const n = notificaciones.find(x => x.id === id);
+    if (n && !n.leida) {
+        n.leida = true;
+        try { await supabaseClient.from('notificaciones').update({ leida: true }).eq('id', id); } catch (e) {}
+    }
+    renderNotifBadge();
+    if (notifPanelOpen) renderNotifPanel();
+}
+
+/** Marks all current user's unread notifications as read. */
+async function markAllNotifsRead() {
+    const anyUnread = notificaciones.some(n => !n.leida);
+    if (!anyUnread) return;
+    notificaciones.forEach(n => { n.leida = true; });
+    renderNotifBadge();
+    renderNotifPanel();
+    try { await supabaseClient.from('notificaciones').update({ leida: true }).eq('usuario_id', currentUserProfile.id).eq('leida', false); } catch (e) {}
+}
+
+/** Updates the bell badge unread count. */
+function renderNotifBadge() {
+    const count = notificaciones.filter(n => !n.leida).length;
+    const badge = document.getElementById('notif-badge');
+    if (!badge) return;
+    badge.textContent = count > 9 ? '9+' : String(count);
+    badge.style.display = count > 0 ? 'flex' : 'none';
+}
+
+/** Formats a timestamp as a relative Spanish string ("hace 5 min", "ayer", …). */
+function timeAgo(ts) {
+    const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+    if (diff < 60) return 'hace un momento';
+    if (diff < 3600) return `hace ${Math.floor(diff / 60)} min`;
+    if (diff < 86400) return `hace ${Math.floor(diff / 3600)} h`;
+    if (diff < 172800) return 'ayer';
+    return new Date(ts).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+}
+
+/** Returns icon, background color, icon color and title for a notification type. */
+function getNotifMeta(tipo) {
+    const M = {
+        turno_asignacion:    { icon: '🕐', bg: '#B5D4F4', color: '#0C447C', title: 'Es tu turno' },
+        guardia_forzada:     { icon: '⚠️', bg: '#F5C4B3', color: '#993C1D', title: 'Guardia asignada' },
+        ventana_voluntaria:  { icon: '📅', bg: '#B5D4F4', color: '#0C447C', title: 'Ventana voluntaria abierta' },
+        propuesta_mercadillo:{ icon: '🔄', bg: '#C0DD97', color: '#3B6D11', title: 'Propuesta recibida' },
+        propuesta_resuelta:  { icon: '✅', bg: '#C0DD97', color: '#3B6D11', title: 'Propuesta resuelta' },
+        hueco_sin_candidato: { icon: '🚨', bg: '#F7C1C1', color: '#A32D2D', title: 'Hueco sin candidato' },
+    };
+    return M[tipo] || { icon: '🔔', bg: '#e2e8f0', color: '#475569', title: 'Notificación' };
+}
+
+/** Builds the human-readable description from a notification's payload. */
+function getNotifDesc(tipo, payload) {
+    const p = payload || {};
+    switch (tipo) {
+        case 'turno_asignacion':    return `Te toca elegir guardias de ${p.mes || ''}.`;
+        case 'guardia_forzada':     return `Se te ha asignado una guardia de ${p.servicio || ''} el ${p.fecha || ''}.`;
+        case 'ventana_voluntaria':  return `La ventana voluntaria de ${p.servicio || ''} en ${p.mes || ''} está abierta. Puedes reclamar huecos libremente.`;
+        case 'propuesta_mercadillo':return `${p.proponente || 'Alguien'} te propone un ${p.tipo || 'cambio'} el ${p.fecha || ''}.`;
+        case 'propuesta_resuelta':  return `Tu propuesta del ${p.fecha || ''} fue ${p.resultado || 'procesada'}.`;
+        case 'hueco_sin_candidato': return `${p.count || 1} hueco(s) de ${p.servicio || ''} sin candidato válido.`;
+        default: return '';
+    }
+}
+
+/** Renders the notification dropdown panel into #notif-panel. */
+function renderNotifPanel() {
+    const panel = document.getElementById('notif-panel');
+    if (!panel) return;
+    const unread = notificaciones.filter(n => !n.leida).length;
+    let html = `<div class="notif-panel__header"><span class="notif-panel__title">Notificaciones</span>${unread > 0 ? `<a class="notif-panel__read-all" onclick="markAllNotifsRead()">marcar todas como leídas</a>` : ''}</div><div class="notif-panel__list">`;
+    if (notificaciones.length === 0) {
+        html += `<div class="notif-empty">No tienes notificaciones</div>`;
+    } else {
+        for (const n of notificaciones) {
+            const meta = getNotifMeta(n.tipo);
+            const desc = getNotifDesc(n.tipo, n.payload);
+            const isAction = n.tipo === 'propuesta_mercadillo' && n.payload?.trade_id;
+            html += `<div class="notif-item${n.leida ? '' : ' notif-item--unread'}" onclick="handleNotifClick('${n.id}','${n.tipo}')">`;
+            html += `<div class="notif-item__icon" style="background:${meta.bg};"><span style="color:${meta.color};">${meta.icon}</span></div>`;
+            html += `<div class="notif-item__content"><div class="notif-item__title">${meta.title}</div><div class="notif-item__desc">${desc}</div><div class="notif-item__time">${timeAgo(n.timestamp)}</div>`;
+            if (isAction) {
+                html += `<div class="notif-item__actions" onclick="event.stopPropagation()"><button class="primary" style="background:var(--ped);" onclick="notifAceptarTrade(${n.payload.trade_id},'${n.id}')">Aceptar</button><button class="danger" onclick="notifRechazarTrade(${n.payload.trade_id},'${n.id}')">Rechazar</button></div>`;
+            }
+            html += `</div>${!n.leida ? '<div class="notif-item__dot"></div>' : ''}</div>`;
+        }
+    }
+    html += `</div>`;
+    panel.innerHTML = html;
+}
+
+/** Handles clicking a notification: marks read, closes panel, navigates to context. */
+async function handleNotifClick(id, tipo) {
+    const n = notificaciones.find(x => x.id === id);
+    if (!n) return;
+    await markNotifRead(id);
+    if (notifPanelOpen) toggleNotifPanel();
+    const p = n.payload || {};
+    if (p.year !== undefined && p.month !== undefined) curDate = new Date(p.year, p.month, 1);
+    if (['turno_asignacion', 'guardia_forzada', 'ventana_voluntaria'].includes(tipo)) nav('cal');
+    else if (['propuesta_mercadillo', 'propuesta_resuelta'].includes(tipo)) nav('merc');
+    else if (tipo === 'hueco_sin_candidato' && isDelegado) nav('admin');
+}
+
+/** Accepts a pending trade from the notification panel. */
+async function notifAceptarTrade(tradeId, notifId) {
+    await processTrade(tradeId, true);
+    await markNotifRead(notifId);
+}
+
+/** Rejects a pending trade from the notification panel. */
+async function notifRechazarTrade(tradeId, notifId) {
+    await processTrade(tradeId, false);
+    await markNotifRead(notifId);
+}
+
+/** Toggles the notification panel open/closed. */
+function toggleNotifPanel() {
+    notifPanelOpen = !notifPanelOpen;
+    const panel = document.getElementById('notif-panel');
+    if (!panel) return;
+    if (notifPanelOpen) {
+        renderNotifPanel();
+        panel.style.display = 'flex';
+        // Defer so this click doesn't immediately close the panel
+        setTimeout(() => document.addEventListener('click', _closeNotifOnOutside, { capture: true }), 0);
+    } else {
+        panel.style.display = 'none';
+        document.removeEventListener('click', _closeNotifOnOutside, { capture: true });
+    }
+}
+
+function _closeNotifOnOutside(e) {
+    const panel = document.getElementById('notif-panel');
+    const btn = document.getElementById('notif-btn');
+    if (panel && panel.contains(e.target)) return; // Click inside panel — keep open
+    if (btn && btn.contains(e.target)) return;      // Click on the bell button — toggleNotifPanel handles it
+    panel.style.display = 'none';
+    notifPanelOpen = false;
+    document.removeEventListener('click', _closeNotifOnOutside, { capture: true });
+}
+
+/** Fires a turno_asignacion notification when the turn holder changes (session-level dedup). */
+async function maybeNotifyTurnChange(y, m) {
+    const turnUser = getCurrentTurn(y, m);
+    if (!turnUser) return;
+    const key = `${y}_${m}_${turnUser}`;
+    if (key === _lastNotifTurnKey) return;
+    _lastNotifTurnKey = key;
+    const profile = globalProfiles.find(p => p.nombre_mostrar === turnUser);
+    if (!profile) return;
+    await insertNotificacion(profile.id, 'turno_asignacion', { year: y, month: m, mes: MONTHS[m] + ' ' + y, residente: turnUser });
+}
+
+/** Sends propuesta_mercadillo to the trade target when a new pending trade is created. */
+async function _notifyNewTrade(trade) {
+    if (!trade || trade.target === 'Externo' || trade.status !== 'pending') return;
+    const targetProf = globalProfiles.find(p => p.nombre_mostrar === trade.target);
+    if (!targetProf) return;
+    const parts = (trade.d1 || '').split('_');
+    const year = parseInt(parts[0]) || curDate.getFullYear();
+    const month = (parseInt(parts[1]) || (curDate.getMonth() + 1)) - 1;
+    await insertNotificacion(targetProf.id, 'propuesta_mercadillo', { trade_id: trade.id, proponente: trade.requester, tipo: trade.type, fecha: formatDK(trade.d1), year, month });
+}
+
+/** Sends propuesta_resuelta to the trade requester after a pending trade is approved or rejected. */
+async function _notifyTradeResolved(tradeId) {
+    const t = state.trades.find(x => x.id === tradeId);
+    if (!t || !['approved', 'rejected'].includes(t.status)) return;
+    if (t.requester === loggedInUser) return; // Requester is the one approving — skip
+    const reqProf = globalProfiles.find(p => p.nombre_mostrar === t.requester);
+    if (!reqProf) return;
+    const parts = (t.d1 || '').split('_');
+    const year = parseInt(parts[0]) || curDate.getFullYear();
+    const month = (parseInt(parts[1]) || (curDate.getMonth() + 1)) - 1;
+    await insertNotificacion(reqProf.id, 'propuesta_resuelta', { trade_id: t.id, tipo: t.type, fecha: formatDK(t.d1), resultado: t.status === 'approved' ? 'aceptada' : 'rechazada', year, month });
+}
+
 /**
  * Rellena campos opcionales de una configuración de promoción con valores por defecto.
  * También realiza la migración desde el formato antiguo (config.servicios) al nuevo (config.planes).
@@ -370,6 +578,7 @@ async function loadState() {
     setStatus('Sincronizado ✅');
     checkAutomaticGraduation();
     renderAll();
+    loadNotificaciones(); // N1: load per-user notifications (fire-and-forget)
   } catch (err) {
     console.error("Error al cargar:", err);
     setStatus('Error de red ❌', true);
@@ -661,6 +870,9 @@ function renderUserHeader() {
   const el = document.getElementById('user-display');
   if (authSession) el.innerHTML = `<div class="user-badge">👤 ${getInitials(loggedInUser)} <button onclick="logoutUser()" style="padding:2px 6px; font-size:0.7rem; margin-left:4px; border:none; background:rgba(0,0,0,0.1); color:var(--dark); border-radius:4px;">Salir</button></div>`;
   else el.innerHTML = `<button onclick="loginWithGoogle()" class="primary" style="padding:0.3rem 0.8rem; font-size:0.8rem; background: #ea4335; border:none; color:white;">Entrar con Google</button>`;
+  // Show bell only when fully logged-in and approved
+  const notifWrapper = document.getElementById('notif-wrapper');
+  if (notifWrapper) notifWrapper.style.display = (authSession && currentUserProfile?.estado === 'aprobado') ? 'block' : 'none';
 }
 
 // ============================================================
@@ -2229,6 +2441,7 @@ async function toggleShift(dateKey, svc) {
   else state.shifts[dateKey][loggedInUser] = svc;
   if (Object.keys(state.shifts[dateKey] || {}).length === 0) delete state.shifts[dateKey];
   document.getElementById('shift-modal').remove(); renderMainCalendar(); await saveState();
+  maybeNotifyTurnChange(curDate.getFullYear(), curDate.getMonth());
 }
 /**
  * Asigna forzosamente una guardia a un residente seleccionado desde el modal de admin.
@@ -2277,6 +2490,7 @@ async function userSkipTurn(y, m) {
     let chosenShifts = []; for(let d=1; d<=getDaysInMonth(y, m); d++) { const dk = formatDateKey(y, m, d); if (state.shifts[dk] && state.shifts[dk][loggedInUser]) chosenShifts.push(`Día ${d} (${state.shifts[dk][loggedInUser]})`); }
     if (!state.exceptionLogs) state.exceptionLogs = []; state.exceptionLogs.push({ user: loggedInUser, monthStr: `${MONTHS[m]} ${y}`, reason: val, shiftsSummary: chosenShifts.length > 0 ? chosenShifts.join(', ') : 'Ninguna', timestamp: new Date().toLocaleString('es-ES') });
     await saveState(); checkAutomaticGraduation();
+    maybeNotifyTurnChange(y, m);
     renderAll();
 }
 /**
@@ -2294,6 +2508,7 @@ async function adminSkipTurn(turnUser, y, m) {
    let chosenShifts = []; for(let d=1; d<=getDaysInMonth(y, m); d++) { const dk = formatDateKey(y, m, d); if (state.shifts[dk] && state.shifts[dk][turnUser]) chosenShifts.push(`Día ${d} (${state.shifts[dk][turnUser]})`); }
    if (!state.exceptionLogs) state.exceptionLogs = []; state.exceptionLogs.push({ user: turnUser, monthStr: `${MONTHS[m]} ${y}`, reason: "Admin Override", shiftsSummary: chosenShifts.length > 0 ? chosenShifts.join(', ') : 'Ninguna', timestamp: new Date().toLocaleString('es-ES') });
    await saveState(); checkAutomaticGraduation();
+   maybeNotifyTurnChange(y, m);
     renderAll();
 }
 
@@ -2324,6 +2539,7 @@ async function adminGrantTurn(y, m) {
         shiftsSummary: '', timestamp: new Date().toLocaleString('es-ES')
     });
     await saveState();
+    maybeNotifyTurnChange(y, m);
     renderAll();
 }
 
@@ -2448,16 +2664,16 @@ function renderMercadoVender(dk, svc) {
     document.getElementById('mercado-dynamic').innerHTML = `<h4 style="margin-bottom:1rem;">Vender guardia de ${svc}</h4><label style="font-size:0.85rem; color:#64748b;">¿A quién se la vendes?</label><select id="vender-to-user"><option value="">-- Selecciona --</option><option value="Externo">👽 Otro Residente (Externo)</option>${res.map(r => `<option value="${r}">${r}</option>`).join('')}</select><button class="primary" style="width:100%" onclick="executeSellRequest('${dk}', '${svc}')">Confirmar Venta</button>`; 
 }
 /** Crea y procesa un trade de tipo 'venta'; si es a Externo, se aprueba directamente. */
-function executeSellRequest(dk, svc) { const target = document.getElementById('vender-to-user').value; if (!target) return alert("Selecciona a quién vender."); const trade = { id: Date.now(), type: 'venta', requester: loggedInUser, target: target, d1: dk, s1: svc, timestamp: new Date().toLocaleString('es-ES') }; let conflicts = checkTradeConflicts(trade); if (conflicts.length > 0) { if (!confirm("⚠️ ATENCIÓN: Conflictos:\n\n" + conflicts.join("\n") + "\n\n¿Proponer de todos modos?")) return; } if (target === 'Externo') { trade.status = 'approved'; alert("Venta a externo realizada."); } else { trade.status = 'pending'; alert(`Solicitud enviada a ${target}.`); } if(!state.trades) state.trades = []; state.trades.push(trade); saveState(); document.getElementById('mercado-modal').remove(); checkAutomaticGraduation();
+function executeSellRequest(dk, svc) { const target = document.getElementById('vender-to-user').value; if (!target) return alert("Selecciona a quién vender."); const trade = { id: Date.now(), type: 'venta', requester: loggedInUser, target: target, d1: dk, s1: svc, timestamp: new Date().toLocaleString('es-ES') }; let conflicts = checkTradeConflicts(trade); if (conflicts.length > 0) { if (!confirm("⚠️ ATENCIÓN: Conflictos:\n\n" + conflicts.join("\n") + "\n\n¿Proponer de todos modos?")) return; } if (target === 'Externo') { trade.status = 'approved'; alert("Venta a externo realizada."); } else { trade.status = 'pending'; alert(`Solicitud enviada a ${target}.`); } if(!state.trades) state.trades = []; state.trades.push(trade); _notifyNewTrade(trade); saveState(); document.getElementById('mercado-modal').remove(); checkAutomaticGraduation();
     renderAll(); }
 
 
 
 /** Crea y procesa un trade de tipo 'cambio' directo entre dos días/residentes. */
-function executeSwapRequestDirect(myDk, mySvc, targetDk, targetSvc, targetUser) { const trade = { id: Date.now(), type: 'cambio', requester: loggedInUser, target: targetUser, d1: myDk, s1: mySvc, d2: targetDk, s2: targetSvc, timestamp: new Date().toLocaleString('es-ES') }; let conflicts = checkTradeConflicts(trade); if (conflicts.length > 0) { if (!confirm("⚠️ Conflictos:\n" + conflicts.join("\n") + "\n¿Proponer de todos modos?")) return; } if (targetUser === 'Externo') { trade.status = 'approved'; alert("Cambio con externo realizado."); } else { trade.status = 'pending'; alert(`Solicitud enviada a ${targetUser}.`); } if(!state.trades) state.trades = []; state.trades.push(trade); saveState(); document.getElementById('mercado-modal').remove(); checkAutomaticGraduation();
+function executeSwapRequestDirect(myDk, mySvc, targetDk, targetSvc, targetUser) { const trade = { id: Date.now(), type: 'cambio', requester: loggedInUser, target: targetUser, d1: myDk, s1: mySvc, d2: targetDk, s2: targetSvc, timestamp: new Date().toLocaleString('es-ES') }; let conflicts = checkTradeConflicts(trade); if (conflicts.length > 0) { if (!confirm("⚠️ Conflictos:\n" + conflicts.join("\n") + "\n¿Proponer de todos modos?")) return; } if (targetUser === 'Externo') { trade.status = 'approved'; alert("Cambio con externo realizado."); } else { trade.status = 'pending'; alert(`Solicitud enviada a ${targetUser}.`); } if(!state.trades) state.trades = []; state.trades.push(trade); _notifyNewTrade(trade); saveState(); document.getElementById('mercado-modal').remove(); checkAutomaticGraduation();
     renderAll(); }
 /** Crea y procesa un trade de tipo 'compra'; si es de Externo, se aprueba directamente. */
-function executeBuyRequest(dk, svc, targetUser) { if (targetUser !== 'Externo' && !confirm(`¿Comprar ${svc} a ${targetUser}?`)) return; if (targetUser === 'Externo' && !confirm(`¿Añadir guardia de ${svc} desde Externo?`)) return; const trade = { id: Date.now(), type: 'compra', requester: loggedInUser, target: targetUser, d1: dk, s1: svc, timestamp: new Date().toLocaleString('es-ES') }; let conflicts = checkTradeConflicts(trade); if (conflicts.length > 0) { if (!confirm("⚠️ Conflictos:\n" + conflicts.join("\n") + "\n¿Solicitar de todos modos?")) return; } if (targetUser === 'Externo') { trade.status = 'approved'; alert("Comprada a externo."); } else { trade.status = 'pending'; alert(`Solicitud enviada a ${targetUser}.`); } if(!state.trades) state.trades = []; state.trades.push(trade); saveState(); document.getElementById('mercado-modal').remove(); checkAutomaticGraduation();
+function executeBuyRequest(dk, svc, targetUser) { if (targetUser !== 'Externo' && !confirm(`¿Comprar ${svc} a ${targetUser}?`)) return; if (targetUser === 'Externo' && !confirm(`¿Añadir guardia de ${svc} desde Externo?`)) return; const trade = { id: Date.now(), type: 'compra', requester: loggedInUser, target: targetUser, d1: dk, s1: svc, timestamp: new Date().toLocaleString('es-ES') }; let conflicts = checkTradeConflicts(trade); if (conflicts.length > 0) { if (!confirm("⚠️ Conflictos:\n" + conflicts.join("\n") + "\n¿Solicitar de todos modos?")) return; } if (targetUser === 'Externo') { trade.status = 'approved'; alert("Comprada a externo."); } else { trade.status = 'pending'; alert(`Solicitud enviada a ${targetUser}.`); } if(!state.trades) state.trades = []; state.trades.push(trade); _notifyNewTrade(trade); saveState(); document.getElementById('mercado-modal').remove(); checkAutomaticGraduation();
     renderAll(); }
 // ============================================================
 // MÓDULO: ADMIN_AJUSTES
@@ -3443,7 +3659,7 @@ async function adminForceBorrarTrade(id) {
  * Aprueba o rechaza una solicitud de trade (o un undo_pending).
  * Verifica que las guardias involucradas aún existen antes de aprobar.
  */
-async function processTrade(id, isApprove) { let t = state.trades.find(x => x.id === id); if (!t) return; if (t.status === 'pending') { if(isApprove) { const computed = getComputedShifts(); if (t.type === 'cambio' && (!computed[t.d1]?.[t.requester] || !computed[t.d2]?.[t.target])) { alert("Error: Las guardias ya no existen."); t.status = 'rejected'; } else if (t.type === 'venta' && !computed[t.d1]?.[t.requester]) { alert("Error: La guardia ya no existe."); t.status = 'rejected'; } else if (t.type === 'compra' && t.target !== 'Externo' && !computed[t.d1]?.[t.target]) { alert("Error: La guardia ya no existe."); t.status = 'rejected'; } else { let conflicts = checkTradeConflicts(t); if (conflicts.length > 0) { if (!confirm("Generará conflictos:\n" + conflicts.join("\n") + "\n¿Continuar?")) return; } t.status = 'approved'; } } else t.status = 'rejected'; } else if (t.status === 'undo_pending') t.status = isApprove ? 'undone' : 'approved'; await saveState(); checkAutomaticGraduation();
+async function processTrade(id, isApprove) { let t = state.trades.find(x => x.id === id); if (!t) return; if (t.status === 'pending') { if(isApprove) { const computed = getComputedShifts(); if (t.type === 'cambio' && (!computed[t.d1]?.[t.requester] || !computed[t.d2]?.[t.target])) { alert("Error: Las guardias ya no existen."); t.status = 'rejected'; } else if (t.type === 'venta' && !computed[t.d1]?.[t.requester]) { alert("Error: La guardia ya no existe."); t.status = 'rejected'; } else if (t.type === 'compra' && t.target !== 'Externo' && !computed[t.d1]?.[t.target]) { alert("Error: La guardia ya no existe."); t.status = 'rejected'; } else { let conflicts = checkTradeConflicts(t); if (conflicts.length > 0) { if (!confirm("Generará conflictos:\n" + conflicts.join("\n") + "\n¿Continuar?")) return; } t.status = 'approved'; } } else t.status = 'rejected'; } else if (t.status === 'undo_pending') t.status = isApprove ? 'undone' : 'approved'; await saveState(); _notifyTradeResolved(id); checkAutomaticGraduation();
     renderAll(); }
 /** Solicita deshacer un trade aprobado. Si es con Externo, se deshace directamente; si no, queda pendiente de confirmación. */
 async function requestTradeUndo(id) { let t = state.trades.find(x => x.id === id); if (!t) return; if (t.target === 'Externo') { if(!confirm("¿Deshacer operación con externo?")) return; t.status = 'undone'; } else { if(!confirm(`¿Enviar solicitud de deshacer?`)) return; t.status = 'undo_pending'; t.undoRequester = loggedInUser; } await saveState(); checkAutomaticGraduation();
@@ -4374,6 +4590,12 @@ async function forzarCierreSubasta(y, m, svcNombre) {
     const analisisCierre = getAnalisisFestivos(y, m);
     const planKey = analisisCierre?.planNombre || '';
     state.subastasCerradasForzosas[`${y}_${m}_${planKey}_${svcNombre}`] = true;
+    // Notify all plan residents that the voluntary window is now open
+    const _mesLabelVC = MONTHS[m] + ' ' + y;
+    (analisisCierre?.planResidentes || []).forEach(nombre => {
+        const _prof = globalProfiles.find(p => p.nombre_mostrar === nombre);
+        if (_prof) insertNotificacion(_prof.id, 'ventana_voluntaria', { year: y, month: m, mes: _mesLabelVC, servicio: svcNombre });
+    });
     await saveState();
     renderAll();
 }
@@ -4541,6 +4763,8 @@ async function ejecutarAsignacionForzosa(y, m, targetSvcNombre) {
                 state.shifts[hueco.dk][residente] = hueco.svc;
                 asignacionesLog.push(`${residente} → ${hueco.svc} (${formatDK(hueco.dk)})`);
                 huecosAsignados++;
+                // Notify the assigned resident
+                { const _fp = globalProfiles.find(p => p.nombre_mostrar === residente); if (_fp) insertNotificacion(_fp.id, 'guardia_forzada', { year: y, month: m, fecha: formatDK(hueco.dk), servicio: hueco.svc }); }
                 if (nominadosSet.has(residente)) nominadosAsignados.add(residente);
                 candidatos.push(candidatos.splice(c, 1)[0]); // rotación fairness
                 asignado = true;
@@ -4568,6 +4792,10 @@ async function ejecutarAsignacionForzosa(y, m, targetSvcNombre) {
     }
     if (huecosImpossibles.length > 0) {
         mensajeFinal += `\n\n⚠️ ${huecosImpossibles.length} hueco(s) imposibles de cubrir sin violar descansos:\n${huecosImpossibles.join('\n')}`;
+        // Notify admins and delegados about uncoverable slots
+        globalProfiles.filter(p => p.estado === 'aprobado' && (p.rol === 'admin' || p.rol === 'delegado')).forEach(ap => {
+            insertNotificacion(ap.id, 'hueco_sin_candidato', { year: y, month: m, servicio: targetSvcNombre, count: huecosImpossibles.length });
+        });
     }
 
     alert(mensajeFinal);

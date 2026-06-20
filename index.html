@@ -8,6 +8,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.3.0/tabler-icons.min.css">
 </head>
 <body>
 
@@ -15,9 +16,17 @@
   <h2 style="margin:0; font-size:1.2rem;">GestionGuardias App 1.0</h2>
   <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
     <div id="user-display"></div>
+    <div id="notif-wrapper" style="position:relative; display:none;">
+      <button id="notif-btn" class="notif-bell-btn" onclick="toggleNotifPanel()" aria-label="Notificaciones">
+        <i class="ti ti-bell"></i>
+        <span id="notif-badge" class="notif-badge" style="display:none;"></span>
+      </button>
+    </div>
     <span id="status-badge">Conectando...</span>
   </div>
 </div>
+
+<div id="notif-panel" class="notif-panel" style="display:none;"></div>
 
 <div id="simulation-banner" class="simulation-banner" role="alert">
   <span class="simulation-banner__label">Vista como: <strong id="simulation-banner-name"></strong></span>
@@ -363,6 +372,6 @@
         </div>
     </div>
 
-    <script src="app.js?v=1.3"></script>
+    <script src="app.js?v=1.4"></script>
 </body>
 </html>
