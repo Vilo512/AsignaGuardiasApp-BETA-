@@ -37,7 +37,7 @@ Este archivo es la **memoria de trabajo persistente** del Engineering Lead entre
 | N2 | ❌ Falta | §15 / §8.4 | Registro persistente de huecos sin candidato válido | `pendiente` |
 | N3 | ❌ Falta | §5.1 | Calendario automático de huecos desde patrón configurable | `pendiente` |
 | N4 | ❌ Falta | §4 / D-02 | Importación de festivos desde fuente oficial | `pendiente` |
-| N5 | ❌ Falta | §8.4 / §15 | Botón admin "Activar subasta ya" para forzar asignación global inmediata | `pendiente` |
+| N5 | ❌ Falta | §8.5 / §8.6 | Propuesta de asignación automática (revisión admin antes de ejecutar) + Forzamiento de turno por inactividad | `pendiente` |
 
 ---
 
@@ -670,39 +670,40 @@ No existe campo de localidad en el contenedor, no hay API conectada, solo entrad
 
 ---
 
-### N5 — Botón admin "Activar subasta ya"
-**Sección PRD:** §8.4 / §15  
-**Impacto:** Medio — herramienta de emergencia y debug para lanzar la asignación forzosa global sin esperar las condiciones temporales  
+### N5 — Propuesta de asignación automática + Forzamiento de turno por inactividad
+**Sección PRD:** §8.5 / §8.6  
+**Impacto:** Medio — herramienta de emergencia con supervisión humana para cubrir huecos globalmente; mecanismo para desbloquear turnos inactivos  
 **Estado:** `pendiente`
 
 **Diagnóstico:**
-La asignación forzosa (`ejecutarAsignacionForzosa`) y el cierre de ventana voluntaria (`forzarCierreSubasta`) solo son accesibles cuando `getAnalisisFestivos` detecta activamente un servicio con huecos pendientes y lo expone en el banner de `renderAlertaCargaMensual`. No existe ningún punto de entrada que permita al admin lanzar el proceso completo de forma inmediata e incondicional.
+La asignación forzosa (`ejecutarAsignacionForzosa`) y el cierre de ventana voluntaria (`forzarCierreSubasta`) solo son accesibles cuando `getAnalisisFestivos` detecta activamente un servicio con huecos pendientes y lo expone en el banner de `renderAlertaCargaMensual`. No existe ningún punto de entrada que permita al admin iniciar el proceso completo de forma inmediata e incondicional.
 
-Ambas funciones operan sobre **un único servicio** a la vez y requieren que el análisis previo devuelva ese servicio como activo. Si hay múltiples servicios con cobertura incompleta, el admin debe ejecutar el proceso servicio a servicio, lo que resulta impracticable en situaciones de urgencia.
+Ambas funciones operan sobre **un único servicio** a la vez y requieren que el análisis previo devuelva ese servicio como activo. Si hay múltiples servicios con cobertura incompleta, el admin debe ejecutar el proceso servicio a servicio. Adicionalmente, no hay mecanismo para desbloquear automáticamente a un residente que no confirma su turno dentro de un umbral de tiempo configurable.
 
-```js
-// Solo accesible cuando el análisis dice que hay algo pendiente — no hay override
-async function ejecutarAsignacionForzosa(y, m, targetSvcNombre) {
-    const analisis = getAnalisisFestivos(y, m);
-    if (analisis.estado === 'libre' || analisis.svcNombre !== targetSvcNombre) return alert("El estado ha cambiado.");
-    // ...
-}
-```
+**Nota de rediseño (Junio 2026):** El concepto original de "Activar subasta ya" (botón de ejecución inmediata vía `activarSubastaGlobal`) fue reemplazado por una **propuesta de asignación con revisión previa** (§8.5) para mantener supervisión humana. Se añade además el **forzamiento de turno por inactividad** (§8.6) como mecanismo complementario. No implementar `activarSubastaGlobal` como función de ejecución directa.
 
-**Acción requerida:**
-- Crear función `activarSubastaGlobal(y, m)` que itere sobre todos los servicios con `subastaTrigger` configurado y ejecute para cada uno: cierre de ventana voluntaria + asignación forzosa, independientemente del estado actual
-- Añadir botón "⚡ Activar subasta ya" en el panel admin (solo `isAdmin`), visible en la cabecera del calendario o en la pestaña de administración, con `confirm()` de confirmación explícita antes de proceder
-- El botón opera sobre el mes activo (`curDate`)
-- Si un servicio ya tiene todos sus huecos cubiertos, saltarlo silenciosamente
+**Acción requerida (§8.5 — Propuesta de asignación automática):**
+- Calcular propuesta completa de reparto para todos los servicios con `subastaTrigger` en el mes activo, usando los mismos criterios de prioridad que `ejecutarAsignacionForzosa`
+- Presentar la propuesta en un modal/panel editable antes de persistir cualquier cambio
+- El admin puede modificar asignaciones individuales dentro de la propuesta
+- Solo al confirmar se ejecutan cambios en `state.shifts`
+- Exclusivo para `isAdmin`
+
+**Acción requerida (§8.6 — Forzamiento de turno por inactividad):**
+- Umbral de inactividad de turno configurable (en horas) en la configuración de la promoción
+- Botón disponible para `isAdmin` y `isDelegado` cuando el residente en turno supera el umbral
+- Asigna el mínimo requerido al residente inactivo usando criterios históricos de §8.4
+- Avanza el turno al siguiente residente en `ordenSeleccion` tras la asignación
+- Requiere confirmación explícita
 
 **Dependencias previas:** Ninguna — funciona de forma autónoma  
 **Dependencias posteriores:**
-- Cuando **N1** esté implementado: los residentes afectados por asignaciones forzosas recibirán la notificación `guardia_forzada` automáticamente (N5 es productor de ese evento)
-- Cuando **N2** esté implementado: los huecos sin candidato generados por N5 quedarán registrados persistentemente (N5 es productor de esos eventos)
+- Cuando **N1** esté implementado: los residentes afectados recibirán la notificación `guardia_forzada` automáticamente (N5 es productor de ese evento)
+- Cuando **N2** esté implementado: los huecos sin candidato válido quedarán registrados persistentemente (N5 es productor de esos eventos)
 
 ### Resultado
 **Estado final:** `pendiente`  
-**Decisiones tomadas:** —  
+**Decisiones tomadas:** Concepto "Activar subasta ya" rediseñado — propuesta con revisión reemplaza ejecución inmediata (Junio 2026)  
 **Efectos secundarios detectados:** —  
 **Archivos modificados:** —
 
@@ -757,3 +758,4 @@ Para referencia del agente: estas secciones son conformes al PRD v0.7. No requie
 | v2.1 | Mayo 2026 | W10 nuevo y resuelto (PR #8): subasta completamente aislada por plan. Guard `_computingAnalisis` + extracción a `_getAnalisisFestivosImpl` (previene stack overflow). `rondaTerminada`, candidatos, conteo de huecos y claves de caché filtrados al plan propio. `includeCurrentMonth=true` para todos los criterios históricos (acumula desde inicio del año de residencia). `criterioTexto` corregido; case `historico_servicio_dinamico` añadido. |
 | v2.2 | Mayo 2026 | W8 resuelto: ventana voluntaria exenta del guard de turno solo para el servicio en subasta. W9 resuelto: banner admin muestra estado real (subasta/completado) cuando `turnUser === null`; botón "Forzosa" recuperado del código muerto e integrado en el panel admin. |
 | v2.3 | Junio 2026 | W11 nuevo y resuelto: inconsistencia `getComputedShifts`/`state.shifts` en `_getAnalisisFestivosImpl` causaba mes atascado con "0 guardias". Fix en dos partes: (A) revertir a `state.shifts` para contar huecos cubiertos; (B) introducir `state.subastaSnapshot[y_m_plan]` que congela exceso/nominados/svcNombre la primera vez que `rondaTerminada=true`, evitando re-evaluación completa y el bug de `fechaFinRonda` persistido. `adminResetMonth` y `adminVaciarGeneracion` borran el snapshot; `resetSubastaEstado` también. |
+| v2.4 | Junio 2026 | N5 rediseñado: concepto "Activar subasta ya" (ejecución inmediata) reemplazado por "Propuesta de asignación automática" (§8.5, revisión admin antes de ejecutar, no destructiva hasta confirmar) + "Forzamiento de turno por inactividad" (§8.6, umbral configurable, disponible para admin y delegado). PRD actualizado a v1.3. |
