@@ -213,7 +213,7 @@
     min-height: 36px;
   }
   .notif-bell-btn:hover { background: #e2e8f0; }
-  .notif-bell-btn .ti { font-size: 1.15rem; }
+  .notif-bell-btn svg { display: block; }
 
   .notif-badge {
     position: absolute;
