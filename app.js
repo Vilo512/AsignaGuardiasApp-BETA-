@@ -3319,7 +3319,7 @@ function renderAdminHoras() {
 async function adminResetSkips(y, m) { const monthKey = getRotationKey(y, m); if (state.skippedTurns[monthKey]) { delete state.skippedTurns[monthKey]; await saveState(); checkAutomaticGraduation();
     renderAll(); } }
 /** Borra todas las guardias, skips, subastas y excepciones del mes. Acción destructiva con confirmación. */
-async function adminResetMonth(y, m) { if (!confirm(`¡PELIGRO! ¿Borrar todas las guardias de este mes?`)) return; const days = getDaysInMonth(y, m); for(let d = 1; d <= days; d++) { const dk = formatDateKey(y, m, d); delete state.shifts[dk]; } const monthKey = getRotationKey(y, m); delete state.skippedTurns[monthKey]; if (state.pendingExceptions && state.pendingExceptions[monthKey]) delete state.pendingExceptions[monthKey]; if (state.configMes && state.configMes[monthKey]) delete state.configMes[monthKey]; if (state.subastasCerradasForzosas) { Object.keys(state.subastasCerradasForzosas).forEach(k => { if (k.startsWith(`${y}_${m}_`)) delete state.subastasCerradasForzosas[k]; }); } if (state.subastaNominados) { Object.keys(state.subastaNominados).forEach(k => { if (k.startsWith(`${y}_${m}_`)) delete state.subastaNominados[k]; }); } await saveState(); checkAutomaticGraduation();
+async function adminResetMonth(y, m) { if (!confirm(`¡PELIGRO! ¿Borrar todas las guardias de este mes?`)) return; const days = getDaysInMonth(y, m); for(let d = 1; d <= days; d++) { const dk = formatDateKey(y, m, d); delete state.shifts[dk]; } const monthKey = getRotationKey(y, m); delete state.skippedTurns[monthKey]; if (state.pendingExceptions && state.pendingExceptions[monthKey]) delete state.pendingExceptions[monthKey]; if (state.configMes && state.configMes[monthKey]) delete state.configMes[monthKey]; if (state.subastasCerradasForzosas) { Object.keys(state.subastasCerradasForzosas).forEach(k => { if (k.startsWith(`${y}_${m}_`)) delete state.subastasCerradasForzosas[k]; }); } if (state.subastaNominados) { Object.keys(state.subastaNominados).forEach(k => { if (k.startsWith(`${y}_${m}_`)) delete state.subastaNominados[k]; }); } if (state.subastaSnapshot) { Object.keys(state.subastaSnapshot).forEach(k => { if (k.startsWith(`${y}_${m}_`)) delete state.subastaSnapshot[k]; }); } if (state.fechaFinRonda) { Object.keys(state.fechaFinRonda).forEach(k => { if (k.startsWith(`${y}_${m}_`)) delete state.fechaFinRonda[k]; }); } await saveState(); checkAutomaticGraduation();
     renderAll(); }
 /**
  * Expulsa a todos los residentes no-admin de la promoción y limpia el estado del calendario completo.
@@ -3351,6 +3351,8 @@ async function adminVaciarGeneracion() {
     state.trades = [];
     state.subastasCerradasForzosas = {};
     state.subastaNominados = {};
+    state.subastaSnapshot = {};
+    state.fechaFinRonda = {};
 
     // 3. Reseteamos la rotación para que solo quede el Admin actual
     const _vacPlanName = promoConfig.planes?.[0]?.nombre || "Plan Base";
@@ -4668,6 +4670,64 @@ function _getAnalisisFestivosImpl(y, m) {
     const miPlan = getPlanForUserOnDate(currentUserProfile, referenceDk) || promoConfig.planes?.[0];
     if (!miPlan) return { estado: 'libre', exceso: 0, nominados: [], svcNombre: null };
 
+    // keyMes incluye el plan para que cada plan tenga su propia marca y snapshot de subasta.
+    const keyMes = `${y}_${m}_${miPlan.nombre}`;
+
+    // ── SNAPSHOT ──────────────────────────────────────────────────────────────────────────────
+    // Si ya existe un snapshot para este mes+plan, devolver desde él sin re-evaluar desde cero.
+    // Escrito la primera vez que rondaTerminada=true. Borrado por adminResetMonth y resetSubastaEstado.
+    if (!state.subastaSnapshot) state.subastaSnapshot = {};
+    const _snap = state.subastaSnapshot[keyMes];
+    if (_snap !== undefined) {
+        // Snapshot "libre": todos los huecos estaban cubiertos cuando terminó la ronda.
+        if (!_snap.svcNombre) return { estado: 'libre', exceso: 0, nominados: [], svcNombre: null };
+        // Verificación ligera: si todos los huecos se cubrieron voluntariamente, transicionar a libre.
+        const _snapPlanRef = (promoConfig.planes || []).find(p => p.nombre === _snap.planNombre) || miPlan;
+        const _snapSvcRef = _snapPlanRef?.servicios?.find(s => s.nombre === _snap.svcNombre);
+        if (_snapSvcRef) {
+            let _currentExceso = 0;
+            const _totalDias = getDaysInMonth(y, m);
+            for (let d = 1; d <= _totalDias; d++) {
+                const dk = formatDateKey(y, m, d);
+                const tag = getDayTag(y, m, d);
+                if ((_snapSvcRef.subastaTrigger || []).includes(tag)) {
+                    if (_snapSvcRef.requiereHabilitacion && !isServiceEnabledOnDate(_snapSvcRef.nombre, dk, _snapPlanRef.nombre)) continue;
+                    const needed = getPlazasForDay(_snapSvcRef, dk);
+                    let assigned = 0;
+                    if (state.shifts[dk]) {
+                        for (const u in state.shifts[dk]) {
+                            if (state.shifts[dk][u] === _snapSvcRef.nombre && !u.startsWith('VRE')) {
+                                const uProfile = globalProfiles.find(p => p.nombre_mostrar === u);
+                                if (!uProfile || getPlanForUserOnDate(uProfile, referenceDk)?.nombre === _snapPlanRef.nombre) assigned++;
+                            }
+                        }
+                    }
+                    _currentExceso += Math.max(0, needed - assigned);
+                }
+            }
+            if (_currentExceso === 0) return { estado: 'libre', exceso: 0, nominados: [], svcNombre: null };
+        }
+        // Estado dinámico: la transición abierta→cerrada sigue dependiendo del tiempo y forzados.
+        const _inicioRonda = state.fechaFinRonda?.[keyMes] ?? 0;
+        const _horasTrans = (Date.now() - _inicioRonda) / (1000 * 60 * 60);
+        const _isForzada = state.subastasCerradasForzosas?.[`${y}_${m}_${miPlan.nombre}_${_snap.svcNombre}`];
+        const _ventana = promoConfig.ventana_voluntaria_horas || 48;
+        const _estadoSnap = (_horasTrans >= _ventana || _isForzada) ? 'subasta_cerrada' : 'subasta_abierta';
+        return {
+            estado: _estadoSnap,
+            exceso: _snap.exceso,
+            nominados: _snap.nominados,
+            planResidentes: _snap.planResidentes,
+            svcNombre: _snap.svcNombre,
+            planNombre: _snap.planNombre,
+            servicioCriterio: _snap.servicioCriterio,
+            horasRestantes: Math.floor(Math.max(0, _ventana - _horasTrans)),
+            criterio: _snap.criterio,
+            historico: _snap.historico
+        };
+    }
+    // ── FIN SNAPSHOT ──────────────────────────────────────────────────────────────────────────
+
     // Ronda terminada solo cuando todos los residentes del plan del usuario han completado el turno.
     // Esto vincula la subasta al plan específico que terminó de elegir, no a la rotación global.
     let rondaTerminada = false;
@@ -4697,8 +4757,6 @@ function _getAnalisisFestivosImpl(y, m) {
         return { estado: 'libre', exceso: 0, nominados: [], svcNombre: null };
     }
 
-    // keyMes incluye el plan para que cada plan tenga su propia marca de inicio de ventana voluntaria
-    const keyMes = `${y}_${m}_${miPlan.nombre}`;
     if (!state.fechaFinRonda) state.fechaFinRonda = {};
     if (!state.fechaFinRonda[keyMes]) {
         state.fechaFinRonda[keyMes] = Date.now();
@@ -4871,7 +4929,20 @@ function _getAnalisisFestivosImpl(y, m) {
             }
 
             const horasRestantes = Math.max(0, ventanaHoras - horasTranscurridas);
-            
+
+            // Congelar evaluación: exceso/nominados/svcNombre no se recalcularán hasta adminResetMonth.
+            state.subastaSnapshot[keyMes] = {
+                exceso: excesoSvc,
+                nominados,
+                svcNombre: svc.nombre,
+                planNombre: miPlan.nombre,
+                planResidentes: residentes,
+                servicioCriterio: svc.subastaCriterioServicio || svc.nombre,
+                criterio: svc.subastaCriterio,
+                historico: historico || null
+            };
+            saveState(); // Fire and forget
+
             return {
                 estado,
                 exceso: excesoSvc,
@@ -4887,6 +4958,10 @@ function _getAnalisisFestivosImpl(y, m) {
         }
     }
     
+    // Todos los servicios cubiertos al terminar la ronda: persistir snapshot "libre" para evitar
+    // re-evaluación completa (getUserProgress × todos los residentes) en llamadas futuras.
+    state.subastaSnapshot[keyMes] = { svcNombre: null, exceso: 0, nominados: [], planNombre: miPlan.nombre };
+    saveState(); // Fire and forget
     return { estado: 'libre', exceso: 0, nominados: [], svcNombre: null };
 }
 
@@ -4989,27 +5064,21 @@ window.resetAllConfigMes = async function() {
 // 🔧 Libera un mes atascado en estado de subasta.
 // Uso: resetSubastaEstado(2026, 7)  ← agosto (m=7, 0-indexed)
 //      resetSubastaEstado(2026, 7, 'Plan R1')  ← solo ese plan
-// Borra fechaFinRonda y subastasCerradasForzosas para que el motor re-evalúe desde cero.
+// Borra subastaSnapshot, fechaFinRonda y subastasCerradasForzosas del mes para que el
+// motor re-evalúe desde cero en la próxima llamada a getAnalisisFestivos.
 window.resetSubastaEstado = async function(y, m, planNombre) {
     let borrados = 0;
-    if (state.fechaFinRonda) {
-        Object.keys(state.fechaFinRonda).forEach(k => {
-            const prefix = planNombre ? `${y}_${m}_${planNombre}` : `${y}_${m}_`;
-            if (planNombre ? k === prefix : k.startsWith(prefix)) {
-                delete state.fechaFinRonda[k];
-                borrados++;
-            }
+    const _rmByPrefix = (obj, prefix, exact) => {
+        if (!obj) return;
+        Object.keys(obj).forEach(k => {
+            if (exact ? k === prefix : k.startsWith(prefix)) { delete obj[k]; borrados++; }
         });
-    }
-    if (state.subastasCerradasForzosas) {
-        Object.keys(state.subastasCerradasForzosas).forEach(k => {
-            const prefix = planNombre ? `${y}_${m}_${planNombre}_` : `${y}_${m}_`;
-            if (k.startsWith(prefix)) {
-                delete state.subastasCerradasForzosas[k];
-                borrados++;
-            }
-        });
-    }
+    };
+    const prefExact = planNombre ? `${y}_${m}_${planNombre}` : null;
+    const prefStart = planNombre ? `${y}_${m}_${planNombre}` : `${y}_${m}_`;
+    _rmByPrefix(state.subastaSnapshot, prefExact || prefStart, !!planNombre);
+    _rmByPrefix(state.fechaFinRonda,   prefExact || prefStart, !!planNombre);
+    _rmByPrefix(state.subastasCerradasForzosas, planNombre ? `${y}_${m}_${planNombre}_` : `${y}_${m}_`, false);
     if (borrados === 0) {
         console.log(`ℹ️ resetSubastaEstado: no se encontraron entradas para y=${y} m=${m}${planNombre ? ' plan=' + planNombre : ''}.`);
         return;

@@ -184,7 +184,9 @@ El admin define para cada Plan de Guardias un conjunto de **reglas de asignació
 
 **Panel de turno en meses pasados:** El indicador de turno activo (banner "Turno de X") solo debe mostrarse para el mes activo o meses futuros. Para meses ya finalizados, el panel de turno no debe renderizarse — su información carece de significado operativo y genera confusión.
 
-**Invariante de reset:** La función de reset mensual debe dejar el mes en estado completamente limpio, equivalente a un mes sin actividad. Esto incluye borrar cualquier marca de subasta cerrada forzosamente (`subastasCerradasForzosas`) para ese mes, de modo que el flujo completo pueda reiniciarse desde cero.
+**Invariante de reset:** La función de reset mensual debe dejar el mes en estado completamente limpio, equivalente a un mes sin actividad. Esto incluye borrar cualquier marca de subasta cerrada forzosamente (`subastasCerradasForzosas`), el timestamp de fin de ronda (`fechaFinRonda`) y el snapshot de evaluación (`subastaSnapshot`) para ese mes, de modo que el flujo completo pueda reiniciarse desde cero.
+
+**Evaluación congelada (snapshot):** La primera vez que `rondaTerminada=true` para un mes+plan, `_getAnalisisFestivosImpl` persiste el resultado en `state.subastaSnapshot[y_m_plan]` con los campos `exceso`, `nominados`, `svcNombre`, `planNombre`, `planResidentes`, `servicioCriterio`, `criterio`, `historico`. Las llamadas posteriores leen desde el snapshot sin re-evaluar el bucle de servicios ni el check `rondaTerminada`. El `estado` (`subasta_abierta` / `subasta_cerrada`) se sigue calculando en tiempo real desde `fechaFinRonda` y `subastasCerradasForzosas`. Si durante la ventana voluntaria todos los huecos son cubiertos voluntariamente (verificación ligera sobre `state.shifts`), la función transiciona a `libre` aunque el snapshot indique `exceso > 0`.
 
 ### 8.1 Selección activa
 1. El residente en turno recibe notificación in-app

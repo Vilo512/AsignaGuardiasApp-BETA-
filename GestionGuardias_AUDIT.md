@@ -1,8 +1,8 @@
 # GestionGuardias App — Auditoría de Implementación
 **Versión PRD auditada:** 1.2  
 **Codebase auditado:** `app.js` (4 600+ líneas, monolítico vanilla JS + Supabase)  
-**Fecha de última revisión:** Mayo 2026  
-**Estado general:** 2 divergencias activas, 5 funciones no implementadas. 16 ítems resueltos o alineados con PRD v1.2. 1 ítem nuevo (W4-B) pendiente de implementación futura.
+**Fecha de última revisión:** Junio 2026  
+**Estado general:** 1 divergencia activa, 5 funciones no implementadas. 18 ítems resueltos o alineados con PRD v1.2. 1 ítem nuevo (W4-B) pendiente de implementación futura.
 
 ---
 
@@ -32,6 +32,7 @@ Este archivo es la **memoria de trabajo persistente** del Engineering Lead entre
 | W8 | ⚠️ Diverge | §8.3 | Calendario bloqueado durante ventana voluntaria — `isMyTurn` impide auto-asignación libre | `resuelto` |
 | W9 | ⚠️ Diverge | §8 | Panel de turno muestra "Turno de Nadie" en meses pasados para admin/delegado | `resuelto` |
 | W10 | ⚠️ Diverge | §8 / §9 | Subasta no aislada por plan — mezcla residentes, huecos y caché entre R1/R2/R3 | `resuelto` |
+| W11 | ⚠️ Diverge | §8 | `_getAnalisisFestivosImpl` usaba `getComputedShifts` para contar huecos cubiertos — inconsistente con `state.shifts` en `renderAlertaCargaMensual` y `ejecutarAsignacionForzosa`; mes atascado con "0 guardias" | `resuelto` |
 | N1 | ❌ Falta | §12 | Sistema de notificaciones in-app completo | `pendiente` |
 | N2 | ❌ Falta | §15 / §8.4 | Registro persistente de huecos sin candidato válido | `pendiente` |
 | N3 | ❌ Falta | §5.1 | Calendario automático de huecos desde patrón configurable | `pendiente` |
@@ -505,6 +506,36 @@ Síntomas adicionales detectados:
 
 ---
 
+### W11 — Subasta atascada: inconsistencia `getComputedShifts` vs `state.shifts` + falta de snapshot
+**Sección PRD:** §8  
+**Impacto:** Alto — mes bloqueado permanentemente en estado de subasta mostrando "0 guardias a repartir" y "No se han detectado huecos libres" al intentar forzar la asignación  
+**Archivos:** `app.js` — `_getAnalisisFestivosImpl`, `adminResetMonth`, `adminVaciarGeneracion`, `resetSubastaEstado`  
+**Estado:** `resuelto`
+
+**Diagnóstico:**  
+`_getAnalisisFestivosImpl` usaba `getComputedShifts()` (que aplica trades de mercadillo) para contar huecos cubiertos (`huecosAsignadosSvc`), mientras `renderAlertaCargaMensual` y `ejecutarAsignacionForzosa` usaban `state.shifts` directamente. La inconsistencia surgía ante trades de tipo `venta a Externo` o venta cross-plan: `computedShifts` elimina la entrada del vendedor (reemplazándola por VRE o por el comprador de otro plan), haciendo que `_getAnalisisFestivosImpl` detectara `excesoSvc > 0` y disparara la subasta; mientras las funciones de UI y forzado veían `state.shifts` con el slot cubierto → "0 guardias pendientes" y "0 huecos libres".
+
+Problema secundario: `fechaFinRonda[keyMes]` se persistía la primera vez que `rondaTerminada=true`, pero nunca se borraba salvo en `adminResetMonth`. Un mes que entró en subasta por la inconsistencia anterior quedaba atascado permanentemente aunque la causa se corrigiera, porque `_getAnalisisFestivosImpl` seguía re-evaluando y encontrando el `fechaFinRonda` persistido.
+
+**Solución aplicada (dos partes):**
+
+**Parte A — Fuente de datos unificada:** Revertir `_getAnalisisFestivosImpl` a usar `state.shifts` en lugar de `getComputedShifts()`. La subasta opera sobre el calendario de asignación original; el mercadillo actúa a posteriori y no debe afectar la detección de huecos obligatorios. `renderAlertaCargaMensual` y `ejecutarAsignacionForzosa` ya usaban `state.shifts` → ahora las tres funciones son consistentes.
+
+**Parte B — Mecanismo de snapshot (`state.subastaSnapshot[y_m_plan]`):**  
+Una vez `rondaTerminada=true`, el resultado de la evaluación completa se persiste en `state.subastaSnapshot[keyMes]` con campos:
+- `exceso`, `nominados`, `svcNombre`, `planNombre`, `planResidentes`, `servicioCriterio`, `criterio`, `historico`
+- Si ningún servicio tiene huecos → snapshot con `svcNombre: null` (sentinel "libre")
+
+Llamadas posteriores para el mismo mes+plan leen desde el snapshot (sin re-evaluar `rondaTerminada` ni el bucle de servicios). El `estado` (`subasta_abierta` / `subasta_cerrada`) se sigue calculando dinámicamente desde `fechaFinRonda` y `subastasCerradasForzosas`. Una verificación ligera (slot count del servicio snapshoteado) detecta si todos los huecos se cubrieron voluntariamente durante la ventana → transición a `libre` aunque el snapshot diga `exceso > 0`.
+
+**Limpieza del snapshot:** `adminResetMonth` y `adminVaciarGeneracion` borran `subastaSnapshot` y `fechaFinRonda` para el mes reset. La utilidad de consola `resetSubastaEstado(y, m, planNombre?)` también los borra (desatasca meses ya bloqueados sin reset completo).
+
+**Efectos secundarios detectados:** Meses con snapshot ya guardado (anteriores a este fix) pueden tener snapshot nulo/ausente — se evalúan normalmente en la primera llamada y escriben el snapshot en ese momento. Comportamiento transparente para el usuario.
+
+**Archivos modificados:** `app.js` — ~75 líneas añadidas/modificadas en `_getAnalisisFestivosImpl` (snapshot check + write), `adminResetMonth` (2 limpiezas añadidas), `adminVaciarGeneracion` (2 resets añadidos), `resetSubastaEstado` (limpieza de subastaSnapshot + refactor helper interno).
+
+---
+
 ## Ítems ❌ — No implementados
 
 ---
@@ -725,3 +756,4 @@ Para referencia del agente: estas secciones son conformes al PRD v0.7. No requie
 | v2.0 | Mayo 2026 | C22 nuevo y resuelto: bug sistémico de lookup de servicio por nombre sin contexto de plan. Introducidos `getSvcConfig`/`getSvcConfigForUser`; `isServiceEnabledOnDate` refactorizado; sort por `ordenSubasta` en `getAnalisisFestivos`; `getSalienteDaysForShift`/`getShiftHours` usan plan real del residente en lugar de Plan R1 fijo. |
 | v2.1 | Mayo 2026 | W10 nuevo y resuelto (PR #8): subasta completamente aislada por plan. Guard `_computingAnalisis` + extracción a `_getAnalisisFestivosImpl` (previene stack overflow). `rondaTerminada`, candidatos, conteo de huecos y claves de caché filtrados al plan propio. `includeCurrentMonth=true` para todos los criterios históricos (acumula desde inicio del año de residencia). `criterioTexto` corregido; case `historico_servicio_dinamico` añadido. |
 | v2.2 | Mayo 2026 | W8 resuelto: ventana voluntaria exenta del guard de turno solo para el servicio en subasta. W9 resuelto: banner admin muestra estado real (subasta/completado) cuando `turnUser === null`; botón "Forzosa" recuperado del código muerto e integrado en el panel admin. |
+| v2.3 | Junio 2026 | W11 nuevo y resuelto: inconsistencia `getComputedShifts`/`state.shifts` en `_getAnalisisFestivosImpl` causaba mes atascado con "0 guardias". Fix en dos partes: (A) revertir a `state.shifts` para contar huecos cubiertos; (B) introducir `state.subastaSnapshot[y_m_plan]` que congela exceso/nominados/svcNombre la primera vez que `rondaTerminada=true`, evitando re-evaluación completa y el bug de `fechaFinRonda` persistido. `adminResetMonth` y `adminVaciarGeneracion` borran el snapshot; `resetSubastaEstado` también. |
