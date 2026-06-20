@@ -4729,9 +4729,12 @@ function _getAnalisisFestivosImpl(y, m) {
     if (residentes.length === 0) return { estado: 'libre', exceso: 0, nominados: [], svcNombre: null };
 
     const serviciosOrdenados = [...miPlan.servicios].sort((a, b) => (a.ordenSubasta || 999) - (b.ordenSubasta || 999));
-    // FIX: usar getComputedShifts() para que las compras/ventas del mercadillo
-    // también cuenten como huecos cubiertos y reduzcan correctamente el exceso.
-    const computedShiftsRef = getComputedShifts();
+    // La subasta opera sobre el calendario de asignación original (state.shifts), nunca sobre
+    // los trades del mercadillo (getComputedShifts). Usar computedShifts aquí generaba una
+    // inconsistencia: ventas a Externo o inter-plan eliminan la entrada del vendedor en
+    // computedShifts pero no en state.shifts, haciendo que la subasta detectara "exceso"
+    // mientras renderAlertaCargaMensual y ejecutarAsignacionForzosa (que usan state.shifts)
+    // mostraban 0 huecos → mes atascado en estado de subasta con 0 guardias a repartir.
     for (let i = 0; i < serviciosOrdenados.length; i++) {
         const svc = serviciosOrdenados[i];
 
@@ -4750,9 +4753,9 @@ function _getAnalisisFestivosImpl(y, m) {
                 const needed = getPlazasForDay(svc, dk);
                 huecosObligatoriosSvc += needed;
 
-                if (computedShiftsRef[dk]) {
-                    for (let u in computedShiftsRef[dk]) {
-                        if (computedShiftsRef[dk][u] === svc.nombre && !u.startsWith('VRE')) {
+                if (state.shifts[dk]) {
+                    for (let u in state.shifts[dk]) {
+                        if (state.shifts[dk][u] === svc.nombre && !u.startsWith('VRE')) {
                             // Solo contar shifts de residentes del mismo plan
                             const uProfile = globalProfiles.find(p => p.nombre_mostrar === u);
                             if (!uProfile || getPlanForUserOnDate(uProfile, referenceDk)?.nombre === miPlan.nombre) {
@@ -4981,6 +4984,39 @@ window.resetAllConfigMes = async function() {
     await saveState();
     console.log('✅ Todos los configMes borrados. Regenerando...');
     renderAll();
+};
+
+// 🔧 Libera un mes atascado en estado de subasta.
+// Uso: resetSubastaEstado(2026, 7)  ← agosto (m=7, 0-indexed)
+//      resetSubastaEstado(2026, 7, 'Plan R1')  ← solo ese plan
+// Borra fechaFinRonda y subastasCerradasForzosas para que el motor re-evalúe desde cero.
+window.resetSubastaEstado = async function(y, m, planNombre) {
+    let borrados = 0;
+    if (state.fechaFinRonda) {
+        Object.keys(state.fechaFinRonda).forEach(k => {
+            const prefix = planNombre ? `${y}_${m}_${planNombre}` : `${y}_${m}_`;
+            if (planNombre ? k === prefix : k.startsWith(prefix)) {
+                delete state.fechaFinRonda[k];
+                borrados++;
+            }
+        });
+    }
+    if (state.subastasCerradasForzosas) {
+        Object.keys(state.subastasCerradasForzosas).forEach(k => {
+            const prefix = planNombre ? `${y}_${m}_${planNombre}_` : `${y}_${m}_`;
+            if (k.startsWith(prefix)) {
+                delete state.subastasCerradasForzosas[k];
+                borrados++;
+            }
+        });
+    }
+    if (borrados === 0) {
+        console.log(`ℹ️ resetSubastaEstado: no se encontraron entradas para y=${y} m=${m}${planNombre ? ' plan=' + planNombre : ''}.`);
+        return;
+    }
+    await saveState();
+    renderAll();
+    console.log(`✅ resetSubastaEstado: ${borrados} entrada(s) borradas. El motor re-evalúa desde cero.`);
 };
 
 // Invalida el cache de ordenSeleccion para que se recalcule en el próximo renderizado
