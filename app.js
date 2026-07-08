@@ -904,11 +904,17 @@ function getUserLevelOnDate(userProfile, dateKey) {
     // EL SALVAVIDAS: Si no ha configurado el cambio de contrato, usamos su fecha de inicio
     let savedDate = userProfile.fecha_cambio_contrato || userProfile.fecha_inicio_residencia;
     const cambioParts = savedDate.split('-');
-    const targetChangeDate = new Date(targetDate.getFullYear(), parseInt(cambioParts[1]) - 1, parseInt(cambioParts[2]));
+
+    // 🗓️ REGLA MENSUAL: el nivel/plan nunca cambia a mitad de mes. El mes que contiene
+    // la fecha de cambio de contrato cuenta ENTERO como el nivel nuevo (el posterior):
+    // cambio el 27/05 → todo mayo ya es R2. Se comparan meses completos, no días.
+    const cambioMes = parseInt(cambioParts[1], 10) - 1;
+    const efectivoVal = targetDate.getFullYear() * 12 + cambioMes;
+    const targetVal = targetDate.getFullYear() * 12 + targetDate.getMonth();
 
     let level = targetDate.getFullYear() - startDate.getFullYear() + 1;
-    if (targetDate < targetChangeDate) level--; // Aún no ha cruzado su fecha este año
-    
+    if (targetVal < efectivoVal) level--; // Aún no ha cruzado su mes de cambio este año
+
     return Math.max(1, level);
 }
 
@@ -1297,6 +1303,70 @@ function getAllResidents() {
     return list;
 }
 
+/**
+ * Indica si un residente (real o virtual) pertenece al plan dado en el mes dado.
+ * Fuente única de la compartimentación por plan: los perfiles reales se resuelven
+ * por fechas de contrato (getPlanForUserOnDate, día 1 como referencia del mes —
+ * el nivel es mensual y solo cambia en frontera de mes, ver getUserLevelOnDate);
+ * los virtuales (sin perfil en globalProfiles) pertenecen al plan en cuyos
+ * baseGroups figuran. No aplica exclusiones de estado (graduados, históricos,
+ * aprobación): eso lo decide cada caller o getResidentesDePlan.
+ * @param {string} nombre - nombre_mostrar
+ * @param {string} planName
+ * @param {number} y
+ * @param {number} m - 0-indexed
+ * @returns {boolean}
+ */
+function residentePerteneceAPlan(nombre, planName, y, m) {
+    const perfil = globalProfiles.find(p => p.nombre_mostrar === nombre);
+    if (perfil) {
+        const plan = getPlanForUserOnDate(perfil, formatDateKey(y, m, 1));
+        return !!plan && plan.nombre === planName;
+    }
+    return (state.planRotations?.[planName]?.baseGroups || []).flat().includes(nombre);
+}
+
+/**
+ * Devuelve los residentes de un plan de guardias en un mes concreto, aplicando la
+ * regla de producto: cada residente solo ve/opera con los compañeros de su plan.
+ * Excluye graduados (state.graduados) e históricos cuya salida (state.historialEventos)
+ * sea anterior al mes consultado. Incluye a los virtuales del plan (baseGroups sin
+ * perfil real), que siguen rotando indefinidamente en su plan original.
+ * @param {string} planName
+ * @param {number} y
+ * @param {number} m - 0-indexed
+ * @param {Object} [opts]
+ * @param {boolean} [opts.soloAprobados=false] - exige estado 'aprobado' en perfiles reales
+ * @returns {string[]} array de nombre_mostrar
+ */
+function getResidentesDePlan(planName, y, m, opts = {}) {
+    const mesVal = y * 12 + m;
+    const out = [];
+
+    for (const p of (globalProfiles || [])) {
+        const n = p.nombre_mostrar;
+        if (state.graduados && state.graduados.includes(n)) continue;
+        if (opts.soloAprobados && p.estado !== 'aprobado') continue;
+        if (p.estado === 'historico') {
+            const ev = state.historialEventos?.[n];
+            if (ev && ev.salida) {
+                const parts = ev.salida.split('-');
+                const salVal = parseInt(parts[0], 10) * 12 + parseInt(parts[1], 10) - 1;
+                if (mesVal > salVal) continue;
+            }
+        }
+        if (residentePerteneceAPlan(n, planName, y, m)) out.push(n);
+    }
+
+    const flatBase = (state.planRotations?.[planName]?.baseGroups || []).flat();
+    for (const n of flatBase) {
+        if (globalProfiles.some(p => p.nombre_mostrar === n)) continue;
+        if (state.graduados && state.graduados.includes(n)) continue;
+        if (!out.includes(n)) out.push(n);
+    }
+    return out;
+}
+
 
 // ============================================================
 // MÓDULO: MOTOR_EVALUACION
@@ -1407,7 +1477,7 @@ function getUserProgress(user, y, m) {
     let uProfile = globalProfiles.find(p => p.nombre_mostrar === user);
     let activePlan = null;
     if (uProfile) {
-        const referenceDk = formatDateKey(y, m, 15);
+        const referenceDk = formatDateKey(y, m, 1);
         activePlan = getPlanForUserOnDate(uProfile, referenceDk);
     } else {
         // Es un residente virtual. Buscamos en qué plan de state.planRotations está su nombre en baseGroups
@@ -1422,7 +1492,7 @@ function getUserProgress(user, y, m) {
             }
         }
         if (!activePlan) {
-            const referenceDk = formatDateKey(y, m, 15);
+            const referenceDk = formatDateKey(y, m, 1);
             activePlan = getPlanForUserOnDate(currentUserProfile, referenceDk);
         }
     }
@@ -3207,24 +3277,8 @@ function executeExport() {
     const shiftsToUse = isMercado ? getComputedShifts() : state.shifts;
     const suffix = isMercado ? "Mercadillo" : "Original";
     
-    // Averiguar qué residentes pertenecen al plan usando state.planRotations como fuente de verdad
-    const _residentesDePlan = new Set();
-    if (state.planRotations?.[planName]) {
-        (state.planRotations[planName].baseGroups || []).flat().forEach(n => _residentesDePlan.add(n));
-    }
-    const residents = getAllResidents().filter(u => {
-        if (_residentesDePlan.has(u)) return true;
-        // Fallback: si no aparece en ningún planRotations, asignar al primer plan
-        const enAlgunPlan = state.planRotations && Object.values(state.planRotations).some(pr => (pr.baseGroups || []).flat().includes(u));
-        if (!enAlgunPlan) return planName === promoConfig.planes[0].nombre;
-        return false;
-    });
-
-    if (residents.length === 0) {
-        alert("No se han encontrado residentes asignados a este Plan de Guardias.");
-        return;
-    }
-
+    // Los residentes del plan se calculan mes a mes (getResidentesDePlan): si alguien
+    // cambia de plan a mitad del período exportado, cada hoja refleja su plan real.
     const wb = XLSX.utils.book_new();
     const STYLE_FESTIVO = { fill: { fgColor: { rgb: "FEE2E2" } }, font: { color: { rgb: "EF4444" }, bold: true } };
 
@@ -3251,19 +3305,43 @@ function executeExport() {
         const days = getDaysInMonth(y, m);
         const sheetName = `${MONTHS[m].substring(0,3)} ${y}`;
 
-        // Construir la tabla de este mes
-        const dataGlobal = []; 
-        const hGlobal = ["Residente"];
-        
+        const residents = getResidentesDePlan(planName, y, m);
+
         // Determinar qué servicios mostrar
         let targetServices = svcName === 'ALL' ? plan.servicios.map(s => s.nombre) : [svcName];
-        
+
+        // Foráneos: residentes de otros planes que aparecen en el calendario de este plan
+        // (mercadillo inter-plan, forzosas). Su guardia se atribuye a este plan solo si su
+        // propio plan NO tiene un servicio con ese nombre; si lo tiene, la guardia pertenece
+        // al calendario de su propio plan y no se exporta aquí.
+        const foraneos = [];
+        const monthPrefix = `${y}_${String(m + 1).padStart(2, '0')}_`;
+        for (const dk in (shiftsToUse || {})) {
+            if (!dk.startsWith(monthPrefix)) continue;
+            for (const u in shiftsToUse[dk]) {
+                if (u === 'Externo' || u.startsWith('VRE')) continue;
+                if (residents.includes(u) || foraneos.includes(u)) continue;
+                const svcNombre = shiftsToUse[dk][u];
+                if (!targetServices.includes(svcNombre)) continue;
+                const propioPlan = (promoConfig.planes || []).find(p =>
+                    p.nombre !== planName && residentePerteneceAPlan(u, p.nombre, y, m));
+                const loReclamaSuPlan = propioPlan && propioPlan.servicios.some(s => s.nombre === svcNombre);
+                if (!loReclamaSuPlan) foraneos.push(u);
+            }
+        }
+
+        const rowUsers = [...residents, ...foraneos];
+
+        // Construir la tabla de este mes
+        const dataGlobal = [];
+        const hGlobal = ["Residente"];
+
         // Cabecera de días
         for (let d = 1; d <= days; d++) hGlobal.push(`${d}`);
         hGlobal.push("Total");
         dataGlobal.push(hGlobal);
 
-        residents.forEach(user => { 
+        rowUsers.forEach(user => {
             const row = [user]; let total = 0; 
             for(let d=1; d<=days; d++) { 
                 const ds = shiftsToUse[formatDateKey(y, m, d)] || {}; 
@@ -3280,13 +3358,16 @@ function executeExport() {
                     row.push(""); 
                 }
             } 
-            row.push(total); dataGlobal.push(row); 
+            // Solo exportamos a quien tuvo guardias del plan este mes (sin filas a cero)
+            if (total > 0) { row.push(total); dataGlobal.push(row); }
         });
 
-        const ws = XLSX.utils.aoa_to_sheet(dataGlobal); 
-        for(let d=1; d<=days; d++) { 
-            if (state.festivos && state.festivos[formatDateKey(y, m, d)]) { 
-                for (let r = 0; r <= residents.length; r++) { 
+        if (dataGlobal.length <= 1) return; // Nadie tuvo guardias de este plan este mes → sin hoja
+
+        const ws = XLSX.utils.aoa_to_sheet(dataGlobal);
+        for(let d=1; d<=days; d++) {
+            if (state.festivos && state.festivos[formatDateKey(y, m, d)]) {
+                for (let r = 0; r < dataGlobal.length; r++) {
                     const cell = ws[XLSX.utils.encode_cell({r: r, c: d})]; 
                     if (cell) cell.s = STYLE_FESTIVO; 
                 } 
@@ -3296,6 +3377,11 @@ function executeExport() {
         // Solo añadimos la hoja si hay residentes (ya filtrados arriba)
         XLSX.utils.book_append_sheet(wb, ws, sheetName);
     });
+
+    if (wb.SheetNames.length === 0) {
+        alert("No se han encontrado residentes asignados a este Plan de Guardias en el período seleccionado.");
+        return;
+    }
 
     let filename = `Guardias_${planName}_${svcName === 'ALL' ? 'Todos' : svcName}_${suffix}.xlsx`;
     XLSX.writeFile(wb, filename);
@@ -4614,7 +4700,7 @@ function proyectarAsignacionForzosa(y, m, analisis) {
     if (!svcRef) return { proyecciones: [], salvados: [] };
 
     const totalDias = getDaysInMonth(y, m);
-    const referenceDk = formatDateKey(y, m, 15);
+    const referenceDk = formatDateKey(y, m, 1);
     let huecosLibres = [];
 
     for (let d = 1; d <= totalDias; d++) {
@@ -4713,7 +4799,7 @@ async function ejecutarAsignacionForzosa(y, m, targetSvcNombre) {
                     if (state.shifts[dk][u] === svc.nombre && !u.startsWith('VRE')) {
                         // Solo contar shifts del mismo plan (consistente con getAnalisisFestivos)
                         const uProfile = globalProfiles.find(p => p.nombre_mostrar === u);
-                        const referenceDkE = formatDateKey(y, m, 15);
+                        const referenceDkE = formatDateKey(y, m, 1);
                         if (!uProfile || getPlanForUserOnDate(uProfile, referenceDkE)?.nombre === planRef.nombre) {
                             assignedCount++;
                         }
@@ -4894,7 +4980,7 @@ function _getAnalisisFestivosImpl(y, m) {
     const monthPrefix = `${y}_${String(m + 1).padStart(2, '0')}_`;
     const monthHasAnyShifts = Object.keys(state.shifts || {}).some(dk => dk.startsWith(monthPrefix));
 
-    const referenceDk = formatDateKey(y, m, 15);
+    const referenceDk = formatDateKey(y, m, 1);
     const miPlan = getPlanForUserOnDate(currentUserProfile, referenceDk) || promoConfig.planes?.[0];
     if (!miPlan) return { estado: 'libre', exceso: 0, nominados: [], svcNombre: null };
 
@@ -4962,11 +5048,10 @@ function _getAnalisisFestivosImpl(y, m) {
     if (state.configMes && state.configMes[mk]) {
         const ordenSeleccion = state.configMes[mk].ordenSeleccion || [];
         const activosMes = getResidentesActivosEnMes(y, m);
-        const residentsOnMyPlan = ordenSeleccion.filter(r => {
-            const rProfile = globalProfiles.find(p => p.nombre_mostrar === r);
-            if (!rProfile) return false;
-            return getPlanForUserOnDate(rProfile, referenceDk)?.nombre === miPlan.nombre;
-        });
+        const residentsOnMyPlan = ordenSeleccion.filter(r =>
+            globalProfiles.some(p => p.nombre_mostrar === r) &&
+            residentePerteneceAPlan(r, miPlan.nombre, y, m)
+        );
         if (residentsOnMyPlan.length > 0) {
             const allDone = residentsOnMyPlan.every(r => {
                 if (!activosMes.some(a => a.toLowerCase() === r.toLowerCase())) return true;
@@ -4994,22 +5079,10 @@ function _getAnalisisFestivosImpl(y, m) {
     const totalDias = getDaysInMonth(y, m);
 
     // Candidatos y nominados son únicamente los residentes del plan del usuario
-    const residentes = getAllResidents().filter(residente => {
+    // (getResidentesActivosEnMes ya descarta graduados y bajas largas aprobadas del mes)
+    const residentes = getResidentesActivosEnMes(y, m).filter(residente => {
         if (state.excluidosSubastas && state.excluidosSubastas.includes(residente)) return false;
-        const tieneBaja = (state.bajasLargas||[]).some(baja => {
-            if (baja.user !== residente || baja.estado !== 'aprobada') return false;
-            const bInicio = new Date(baja.fechaInicio);
-            const bFin = new Date(baja.fechaFin);
-            return (bInicio <= new Date(y, m, totalDias) && bFin >= new Date(y, m, 1));
-        });
-        if (tieneBaja) return false;
-        const rProfile = globalProfiles.find(p => p.nombre_mostrar === residente);
-        if (!rProfile) {
-            // Residente virtual: incluir si pertenece a este plan por baseGroups
-            const vPlan = state.planRotations?.[miPlan.nombre];
-            return (vPlan?.baseGroups || []).flat().includes(residente);
-        }
-        return getPlanForUserOnDate(rProfile, referenceDk)?.nombre === miPlan.nombre;
+        return residentePerteneceAPlan(residente, miPlan.nombre, y, m);
     });
     
     if (residentes.length === 0) return { estado: 'libre', exceso: 0, nominados: [], svcNombre: null };
@@ -5346,7 +5419,7 @@ function getCurrentTurn(y, m) {
     
     // Si no hay configMes para este mes, lo generamos automáticamente
     if (!state.configMes || !state.configMes[mk]) {
-        const dk = formatDateKey(y, m, 15);
+        const dk = formatDateKey(y, m, 1);
         const targetKey = getRotationKey(y, m);
         let flatOrden = [];
         
@@ -5361,13 +5434,11 @@ function getCurrentTurn(y, m) {
             const planFlat = (rotGroups || []).flat();
             
             // Solo incluir a quienes realmente pertenecen a este plan este mes y están aprobados
-            // Solo incluir a quienes realmente pertenecen a este plan este mes y están aprobados (y permitir residentes virtuales que ya forman parte del plan rotado)
+            // (los virtuales pertenecen al plan de sus baseGroups y se incluyen siempre)
             const enEstePlan = planFlat.filter(n => {
                 const p = globalProfiles.find(pr2 => pr2.nombre_mostrar === n);
-                if (!p) return true; // Si es virtual, se incluye por defecto en su plan asignado
-                if (p.estado !== 'aprobado') return false;
-                const planActual = getPlanForUserOnDate(p, dk);
-                return planActual && planActual.nombre === plan.nombre;
+                if (p && p.estado !== 'aprobado') return false;
+                return residentePerteneceAPlan(n, plan.nombre, y, m);
             });
             
             for (const r of enEstePlan) {
