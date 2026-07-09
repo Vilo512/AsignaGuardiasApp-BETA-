@@ -571,6 +571,11 @@ async function loadState() {
           console.warn('[Safety] Limpiando state.graduados falsos – planRotations sin grupos reales configurados.');
           state.graduados = [];
       }
+      // 🧭 B7: migración única de habilitaciones a claves por plan (svc@@plan)
+      if (migrarHabilitacionesPorPlan()) {
+          console.log('🧭 [B7] state.habilitaciones migrado a claves por plan. Persistiendo...');
+          saveState(); // fire-and-forget; la migración es idempotente
+      }
     } else {
       state.shifts = {}; state.customRotations = {}; state.pedWhitelist = {}; state.festivos = {}; state.trades = [];
       const _initPlanName = promoConfig.planes?.[0]?.nombre || "Plan Base";
@@ -2192,8 +2197,39 @@ function getServiceColor(svcName) {
  * @param {string|null} planName
  * @returns {boolean}
  */
+/**
+ * 🧭 B7 — Migración de una sola vez: state.habilitaciones pasa de indexarse por nombre
+ * de servicio ("Urgencias") a indexarse por servicio y plan ("Urgencias@@Plan R1").
+ * Antes, dos planes con un servicio del mismo nombre COMPARTÍAN los días pintados: los
+ * días habilitados de R1 se veían/bloqueaban en R2 y viceversa. Los valores legacy se
+ * copian a TODOS los planes que tienen ese nombre de servicio (conserva exactamente el
+ * comportamiento visible previo) y la clave legacy se elimina. Claves de servicios
+ * huérfanos (renombrados/borrados) se conservan tal cual.
+ * @returns {boolean} true si hubo cambios que persistir
+ */
+function migrarHabilitacionesPorPlan() {
+    if (!promoConfig.planes || promoConfig.planes.length === 0) return false;
+    if (!state.habilitaciones || state.habilitacionesPorPlan) return false;
+    let changed = false;
+    for (const dk of Object.keys(state.habilitaciones)) {
+        const dia = state.habilitaciones[dk];
+        for (const key of Object.keys(dia)) {
+            if (key.includes('@@')) continue;
+            const duenos = promoConfig.planes.filter(p => (p.servicios || []).some(s => s.nombre === key));
+            if (duenos.length === 0) continue;
+            for (const p of duenos) {
+                if (dia[`${key}@@${p.nombre}`] === undefined) dia[`${key}@@${p.nombre}`] = dia[key];
+            }
+            delete dia[key];
+            changed = true;
+        }
+    }
+    state.habilitacionesPorPlan = true; // marca: no volver a escanear
+    return changed;
+}
+
 function isServiceEnabledOnDate(svcName, dk, planName = null) {
-    let svc;
+    let svc, ownerPlanName = planName;
     if (planName) {
         svc = getSvcConfig(svcName, planName);
     } else {
@@ -2202,10 +2238,16 @@ function isServiceEnabledOnDate(svcName, dk, planName = null) {
         // Pasar siempre planName en código nuevo.
         const pData = (promoConfig.planes || []).find(p => p.servicios.some(s => s.nombre === svcName));
         svc = pData?.servicios.find(s => s.nombre === svcName);
+        ownerPlanName = pData?.nombre || null;
     }
     if (!svc) return false;
     if (!svc.requiereHabilitacion) return true;
-    if (state.habilitaciones?.[dk]?.[svcName] !== false && state.habilitaciones?.[dk]?.[svcName] !== undefined) return true;
+    // 🧭 B7: lectura por plan ("svc@@plan") con fallback a la clave legacy pre-migración
+    const dia = state.habilitaciones?.[dk] || {};
+    const val = (ownerPlanName && dia[`${svcName}@@${ownerPlanName}`] !== undefined)
+        ? dia[`${svcName}@@${ownerPlanName}`]
+        : dia[svcName];
+    if (val !== false && val !== undefined) return true;
     if (svcName === 'Pediatría' && state.pedWhitelist?.[dk] !== false && state.pedWhitelist?.[dk] !== undefined) return true;
     return false;
 }
@@ -2217,10 +2259,19 @@ function isServiceEnabledOnDate(svcName, dk, planName = null) {
  * @param {string} dk - dateKey
  * @returns {number}
  */
-function getPlazasForDay(svc, dk) {
-    if (svc.requiereHabilitacion && state.habilitaciones && state.habilitaciones[dk] && state.habilitaciones[dk][svc.nombre] !== undefined && state.habilitaciones[dk][svc.nombre] !== false) {
-        let val = state.habilitaciones[dk][svc.nombre];
-        if (typeof val === 'number') return val;
+function getPlazasForDay(svc, dk, planName = null) {
+    if (svc.requiereHabilitacion && state.habilitaciones && state.habilitaciones[dk]) {
+        // 🧭 B7: resolver el plan dueño del servicio — por parámetro, por identidad del
+        // objeto de config, o por nombre (primer plan que lo tenga) como último recurso.
+        const ownerPlanName = planName
+            || (promoConfig.planes || []).find(p => (p.servicios || []).includes(svc))?.nombre
+            || (promoConfig.planes || []).find(p => (p.servicios || []).some(s => s.nombre === svc.nombre))?.nombre
+            || null;
+        const dia = state.habilitaciones[dk];
+        const val = (ownerPlanName && dia[`${svc.nombre}@@${ownerPlanName}`] !== undefined)
+            ? dia[`${svc.nombre}@@${ownerPlanName}`]
+            : dia[svc.nombre];
+        if (val !== undefined && val !== false && typeof val === 'number') return val;
     }
     return svc.plazasPorDia >= 0 ? svc.plazasPorDia : 1;
 }
@@ -2448,7 +2499,9 @@ function renderMainCalendar() {
         assigned.forEach(u => {
             html += `<div class="shift-badge" style="background:${svc.color};">👤 ${getInitials(u)}</div>`;
         });
-        const pd = getPlazasForDay(svc, dateKey);
+        // 🧭 B7: plan explícito — los objetos de getAllUniqueServices pertenecen por
+        // identidad al primer plan con ese nombre, no necesariamente al visualizado
+        const pd = getPlazasForDay(svc, dateKey, planVistaCtx ? planVistaCtx.planName : null);
         if (pd > 1) {
             const filled = Object.keys(dayShifts || {}).filter(u =>
                 dayShifts[u] === svc.nombre && esTitularVisibleEnPlan(u, svc.nombre, planVistaCtx)).length;
@@ -3628,17 +3681,21 @@ function renderAdminCalendar() {
                     // LONG PRESS: Custom value
                     if (!state.habilitaciones) state.habilitaciones = {};
                     if (!state.habilitaciones[dateKey]) state.habilitaciones[dateKey] = {};
-                    
-                    const current = state.habilitaciones[dateKey][svcName];
+
+                    // 🧭 B7: las escrituras van SIEMPRE a la clave por plan
+                    const habKey = `${svcName}@@${planName}`;
+                    const current = state.habilitaciones[dateKey][habKey] !== undefined
+                        ? state.habilitaciones[dateKey][habKey]
+                        : state.habilitaciones[dateKey][svcName];
                     let num = prompt("Introduce el número de plazas PERSONALIZADO para este día (o 0 para ilimitado, o deja vacío para cancelar):", typeof current === 'number' ? current : (targetSvc ? targetSvc.plazasPorDia : 1));
                     if (num === null || num.trim() === '') return;
-                    
+
                     let parsed = parseInt(num, 10);
                     if (!isNaN(parsed) && parsed >= 0) {
-                        state.habilitaciones[dateKey][svcName] = parsed;
+                        state.habilitaciones[dateKey][habKey] = parsed;
                     }
-                    
-                    if (svcName === 'Pediatría') state.pedWhitelist[dateKey] = state.habilitaciones[dateKey][svcName] !== false;
+
+                    if (svcName === 'Pediatría') state.pedWhitelist[dateKey] = state.habilitaciones[dateKey][habKey] !== false;
                     
                     saveState(); 
                     renderAdminCalendar();
@@ -3658,13 +3715,17 @@ function renderAdminCalendar() {
 
                 if (!state.habilitaciones) state.habilitaciones = {};
                 if (!state.habilitaciones[dateKey]) state.habilitaciones[dateKey] = {};
-                
-                const actual = state.habilitaciones[dateKey][svcName];
+
+                // 🧭 B7: las escrituras van SIEMPRE a la clave por plan (lectura con fallback legacy)
+                const habKey = `${svcName}@@${planName}`;
+                const actual = state.habilitaciones[dateKey][habKey] !== undefined
+                    ? state.habilitaciones[dateKey][habKey]
+                    : state.habilitaciones[dateKey][svcName];
                 const currentlyEnabled = actual !== undefined && actual !== false;
-                
-                state.habilitaciones[dateKey][svcName] = currentlyEnabled ? false : (targetSvc ? targetSvc.plazasPorDia : 1);
-                
-                if (svcName === 'Pediatría') state.pedWhitelist[dateKey] = !!state.habilitaciones[dateKey][svcName];
+
+                state.habilitaciones[dateKey][habKey] = currentlyEnabled ? false : (targetSvc ? targetSvc.plazasPorDia : 1);
+
+                if (svcName === 'Pediatría') state.pedWhitelist[dateKey] = !!state.habilitaciones[dateKey][habKey];
                 
                 saveState(); 
                 renderAdminCalendar(); 
