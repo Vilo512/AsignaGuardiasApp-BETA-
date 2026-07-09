@@ -839,6 +839,17 @@ function exitSimulationMode() {
     renderAll();
 }
 
+/** Repuebla el selector de residentes del toolbar admin con los del plan elegido. */
+function onAdminPlanChange(y, m) {
+    const planSel = document.getElementById('sel-admin-plan')?.value;
+    const selRes = document.getElementById('sel-admin-resident');
+    if (!planSel || !selRes) return;
+    const opts = getResidentesActivosEnMes(y, m)
+        .filter(r => residentePerteneceAPlan(r, planSel, y, m))
+        .map(r => `<option value="${r}">${r}</option>`).join('');
+    selRes.innerHTML = '<option value="">— Residente —</option>' + opts;
+}
+
 /** Muestra u oculta el selector de residente según la acción de admin elegida (grant/simulate). */
 function onAdminModeChange() {
     const mode = document.getElementById('sel-admin-mode')?.value;
@@ -865,9 +876,10 @@ function onAdminActionConfirm(y, m) {
     if (!mode || !res) return alert('Selecciona una acción y un residente.');
     if (mode === 'grant') {
         if (simulatedViewUser !== null) { alert('⚠️ Estás en modo visualización. Sal de la simulación para realizar cambios.'); return; }
-        const planVista = getCurrentRotPlan(formatDateKey(y, m, 1));
-        if (!puedeGestionarPlan(planVista, y, m)) { alert('⚠️ Solo puedes otorgar turnos dentro de tu propio plan de guardias.'); return; }
-        if (!residentePerteneceAPlan(res, planVista, y, m)) { alert('⚠️ Ese residente no pertenece al plan visualizado este mes.'); return; }
+        // El plan de referencia es el del subselector del toolbar (por defecto, el visualizado)
+        const planSel = document.getElementById('sel-admin-plan')?.value || getCurrentRotPlan(formatDateKey(y, m, 1));
+        if (!puedeGestionarPlan(planSel, y, m)) { alert('⚠️ Solo puedes otorgar turnos dentro de tu propio plan de guardias.'); return; }
+        if (!residentePerteneceAPlan(res, planSel, y, m)) { alert('⚠️ Ese residente no pertenece al plan seleccionado este mes.'); return; }
         if (!state.grantedTurn) state.grantedTurn = {};
         state.grantedTurn[getRotationKey(y, m)] = res;
         if (!state.exceptionLogs) state.exceptionLogs = [];
@@ -2237,8 +2249,11 @@ function renderMainCalendar() {
        if (isAdmin) html += `<button class="danger" style="padding:4px 8px; font-size:0.75rem; background:var(--fest); color:white;" onclick="adminResetMonth(${y}, ${m})">⚠️ Reset Mes</button>`;
        html += `</div></div>`;
        // Toolbar unificado: Otorgar turno / Visualizar como — solo residentes del plan visualizado
+       // Subselector de promoción: por defecto el plan visualizado, pero se puede cambiar
+       // para listar los residentes de otro plan (ej. admin R2 visualizando a una R1).
        const activosToolbar = getResidentesActivosEnMes(y, m).filter(r => residentePerteneceAPlan(r, planVista, y, m));
        const optsToolbar = activosToolbar.map(r => `<option value="${r}">${r}</option>`).join('');
+       const optsPlanesToolbar = (promoConfig.planes || []).map(p => `<option value="${p.nombre}" ${p.nombre === planVista ? 'selected' : ''}>${p.nombre}</option>`).join('');
        html += `<div class="admin-action-toolbar">
            <div class="admin-action-toolbar__mode-row">
                <span class="admin-action-toolbar__mode-label">Acción:</span>
@@ -2249,6 +2264,9 @@ function renderMainCalendar() {
                </select>
            </div>
            <div id="admin-action-resident-row" class="admin-action-toolbar__resident-row">
+               <select id="sel-admin-plan" class="admin-action-toolbar__resident-select" style="flex:0 1 auto;" title="Promoción / Plan de guardias" onchange="onAdminPlanChange(${y}, ${m})">
+                   ${optsPlanesToolbar}
+               </select>
                <select id="sel-admin-resident" class="admin-action-toolbar__resident-select">
                    <option value="">— Residente —</option>
                    ${optsToolbar}
