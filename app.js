@@ -2044,7 +2044,9 @@ function nav(tab) {
  * @param {'calendario'|'excepciones'|'export'|'cuentas'|'horas'|'seguridad'|'ajustes'} sub
  */
 function navAdmin(sub) {
-  const adminOnlySubs = ['calendario', 'ajustes', 'seguridad'];
+  // 🧭 B5: 'calendario' ya no es solo-admin — el delegado puede pintar los días
+  // habilitados de SU plan (renderAdminCalendar restringe pinceles y filtro).
+  const adminOnlySubs = ['ajustes', 'seguridad'];
   if (adminOnlySubs.includes(sub) && !isAdmin) sub = 'excepciones';
   currentAdminView = sub;
   ['calendario','excepciones','export','cuentas','horas','seguridad','ajustes'].forEach(t => {
@@ -3529,22 +3531,34 @@ function renderAdminCalendar() {
     const selectTool = document.getElementById('admin-paint-tool');
     let currentVal = selectTool.value;
     
-    // NUEVO: Filtro por Nivel/Año
+    // Filtro por Nivel/Año — 🧭 B5: el admin ve todos los planes; el delegado queda
+    // fijado a SU plan calculado del mes visible (puede cambiar con los años R1→R2).
+    const planPropioNombre = isAdmin ? null : (getPlanForUserOnDate(currentUserProfile, formatDateKey(y, m, 1))?.nombre || null);
     if (!document.getElementById('admin-level-filter')) {
-        const filterHtml = `<select id="admin-level-filter" style="margin-right:10px; padding:6px; border-radius:6px; border:1px solid #cbd5e1;" onchange="renderAdminCalendar()">
-            <option value="ALL">Todos los Niveles</option>
-            ${(promoConfig.planes || []).map(p => `<option value="${p.nombre}">${p.nombre}</option>`).join('')}
-        </select>`;
-        selectTool.insertAdjacentHTML('beforebegin', filterHtml);
+        selectTool.insertAdjacentHTML('beforebegin', `<select id="admin-level-filter" style="margin-right:10px; padding:6px; border-radius:6px; border:1px solid #cbd5e1;" onchange="renderAdminCalendar()"></select>`);
     }
-    const levelFilter = document.getElementById('admin-level-filter').value;
+    const levelSel = document.getElementById('admin-level-filter');
+    const prevLevel = levelSel.value;
+    if (isAdmin) {
+        levelSel.innerHTML = `<option value="ALL">Todos los Niveles</option>` +
+            (promoConfig.planes || []).map(p => `<option value="${p.nombre}">${p.nombre}</option>`).join('');
+    } else {
+        levelSel.innerHTML = planPropioNombre
+            ? `<option value="${planPropioNombre}">${planPropioNombre}</option>`
+            : `<option value="ALL">Sin plan asignado</option>`;
+    }
+    if (prevLevel && levelSel.querySelector(`option[value="${prevLevel}"]`)) levelSel.value = prevLevel;
+    const levelFilter = levelSel.value;
 
-    // 1. Construcción dinámica del desplegable
-    let optionsHtml = `<option value="festivos">🔴 Pintar Festivos Oficiales</option>`;
-    
+    // 1. Construcción dinámica del desplegable de pinceles.
+    // Festivos oficiales: solo admin (state.festivos es global, afecta a TODOS los planes).
+    let optionsHtml = isAdmin ? `<option value="festivos">🔴 Pintar Festivos Oficiales</option>` : '';
+
     if (promoConfig.planes) {
         promoConfig.planes.forEach(plan => {
             if (levelFilter !== 'ALL' && plan.nombre !== levelFilter) return;
+            // El delegado solo recibe pinceles de su propio plan
+            if (!isAdmin && plan.nombre !== planPropioNombre) return;
             if (plan.servicios) {
                 plan.servicios.forEach(svc => {
                     if (svc.requiereHabilitacion) {
@@ -3555,13 +3569,13 @@ function renderAdminCalendar() {
             }
         });
     }
-    
+
     selectTool.innerHTML = optionsHtml;
     if (currentVal && selectTool.querySelector(`option[value="${currentVal}"]`)) {
         selectTool.value = currentVal;
     } else {
-        currentVal = 'festivos';
-        selectTool.value = 'festivos';
+        currentVal = selectTool.options.length > 0 ? selectTool.options[0].value : '';
+        selectTool.value = currentVal;
     }
     selectTool.onchange = renderAdminCalendar; // Hacer reactivo al cambiar de pincel
 
@@ -3585,9 +3599,11 @@ function renderAdminCalendar() {
         // Lógica de habilitación
         if (currentVal.startsWith('svc_')) {
             const parts = currentVal.replace('svc_', '').split('_');
-            const svcName = parts[0]; 
+            const svcName = parts[0];
             const planName = parts[1];
-            
+            // 🧭 B5: solo se puede pintar el plan que se gestiona (admin: todos)
+            const puedePintar = puedeGestionarPlan(planName, y, m);
+
             const isEnabled = isServiceEnabledOnDate(svcName, dateKey, planName);
             
             const targetPlan = promoConfig.planes.find(p => p.nombre === planName);
@@ -3606,8 +3622,8 @@ function renderAdminCalendar() {
             
             cell.onmousedown = (e) => {
                 // Ignore right click
-                if (e.button !== 0) return;
-                
+                if (e.button !== 0 || !puedePintar) return;
+
                 longPressTimer = setTimeout(() => {
                     // LONG PRESS: Custom value
                     if (!state.habilitaciones) state.habilitaciones = {};
@@ -3638,8 +3654,8 @@ function renderAdminCalendar() {
             cell.ondragstart = clearTimer;
 
             cell.onclick = (e) => {
-                if (e.detail === 0) return; // sometimes triggered by long press cancel
-                
+                if (e.detail === 0 || !puedePintar) return; // sometimes triggered by long press cancel
+
                 if (!state.habilitaciones) state.habilitaciones = {};
                 if (!state.habilitaciones[dateKey]) state.habilitaciones[dateKey] = {};
                 
