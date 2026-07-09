@@ -2505,8 +2505,19 @@ function openShiftModal(y, m, d, dateKey) {
   const viewProfile = (simulatedViewUser !== null
       ? globalProfiles.find(p => p.nombre_mostrar === simulatedViewUser)
       : null) || currentUserProfile;
-  const myPlanOnDate = getPlanForUserOnDate(viewProfile, dateKey);
+  // 🧭 B4: para delegado/admin sin simulación, el modal sigue el plan VISUALIZADO
+  // (selector de rotación), igual que el calendario que tiene detrás.
+  const myPlanOnDate = (isDelegado && simulatedViewUser === null)
+      ? ((promoConfig.planes || []).find(p => p.nombre === getCurrentRotPlan(dateKey)) || getPlanForUserOnDate(viewProfile, dateKey))
+      : getPlanForUserOnDate(viewProfile, dateKey);
   const serviciosDisponibles = myPlanOnDate ? myPlanOnDate.servicios : [];
+  // Contexto de visibilidad del plan (mismo criterio B1 que el calendario) y candidatos
+  // asignables: residentes del plan activos este mes (sin graduados/históricos/bajas).
+  const planCtxModal = getPlanVistaContext(y, m);
+  const esGestorModal = myPlanOnDate ? puedeGestionarPlan(myPlanOnDate.nombre, y, m) : isAdmin;
+  const _activosMesModal = getResidentesActivosEnMes(y, m);
+  const candidatosForce = (planCtxModal ? planCtxModal.residentes : getAllResidents())
+      .filter(r => _activosMesModal.some(a => a.toLowerCase() === r.toLowerCase()));
   const pDataFull = getUserProgress(viewUser, y, m).progress;
   const theTag = getDayTag(y, m, d);
 
@@ -2520,26 +2531,36 @@ function openShiftModal(y, m, d, dateKey) {
   // Cambiamos el bucle para que recorra SOLO tus servicios autorizados para esta fecha
 serviciosDisponibles.forEach((svc, svcIdx) => {
     html += `<div class="shift-option" style="flex-direction:column; align-items:stretch;"><div class="shift-option-header"><strong style="color:${svc.color};">${svc.nombre}</strong></div>`;
-    const holders = Object.keys(dayShifts || {}).filter(u => dayShifts[u] === svc.nombre);
-    
+    // 🧭 B4: los titulares se filtran con el mismo criterio de plan que el calendario
+    const holders = Object.keys(dayShifts || {}).filter(u =>
+        dayShifts[u] === svc.nombre && esTitularVisibleEnPlan(u, svc.nombre, planCtxModal));
+
     if (isDelegado && simulatedViewUser === null) {
-// A) INTERFAZ PARA ADMIN/DELEGADO
-holders.forEach(h => { 
+// A) INTERFAZ PARA ADMIN/DELEGADO (edición solo si gestiona el plan visualizado)
+holders.forEach(h => {
     let currentMode = state.shiftModifiers?.[dateKey]?.[h]?.tipo || 'normal';
+    const modeLabels = { normal: 'Guardia Normal', partida_primera: 'Partida Diurna (50% H / Sin Saliente)', partida_segunda: 'Partida Nocturna (50% H / Con Saliente)' };
     html += `<div style="background:#f8fafc; border:1px solid #e2e8f0; padding:10px; border-radius:6px; margin-top:8px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
             <span style="font-size:0.85rem; color:#64748b;">Asignado: <b>${h}</b></span>
-            <button class="danger icon-btn" onclick="adminForceRemove('${dateKey}', '${h}', ${y}, ${m}, ${d})">Quitar</button>
-        </div>
-        <label style="font-size:0.75rem; color:#475569; display:block; margin-bottom:2px;">Regimen de Guardia:</label>
+            ${esGestorModal ? `<button class="danger icon-btn" onclick="adminForceRemove('${dateKey}', '${h}', ${y}, ${m}, ${d})">Quitar</button>` : ''}
+        </div>`;
+    if (esGestorModal) {
+        html += `<label style="font-size:0.75rem; color:#475569; display:block; margin-bottom:2px;">Regimen de Guardia:</label>
         <select onchange="updateShiftMode('${dateKey}', '${h}', this.value)" style="margin:0; padding:4px; font-size:0.8rem; width:100%; background:white;">
             <option value="normal" ${currentMode === 'normal' ? 'selected' : ''}>Guardia Normal</option>
             <option value="partida_primera" ${currentMode === 'partida_primera' ? 'selected' : ''}>Partida Diurna (50% H / Sin Saliente)</option>
             <option value="partida_segunda" ${currentMode === 'partida_segunda' ? 'selected' : ''}>Partida Nocturna (50% H / Con Saliente)</option>
-        </select>
-    </div>`;
+        </select>`;
+    } else {
+        html += `<span style="font-size:0.75rem; color:#94a3b8;">Régimen: ${modeLabels[currentMode] || currentMode} (solo lectura: no es tu plan)</span>`;
+    }
+    html += `</div>`;
 	}); // ⚠️ ESTE CIERRE ES EL QUE HABÍAS BORRADO
-        html += `<div style="display:flex; gap:4px; margin-top:12px; border-top:1px solid #e2e8f0; padding-top:8px;"><select id="force-sel-${svcIdx}" style="margin:0; padding:4px; font-size:0.8rem;"><option value="">Añadir Residente...</option>${getAllResidents().map(r => `<option value="${r}">${r}</option>`).join('')}</select><button class="primary" style="background:var(--dark); color:white;" onclick="adminForceAssign('${dateKey}', '${svc.nombre}', ${y}, ${m}, ${d}, 'force-sel-${svcIdx}')">Poner</button></div>`;
+        if (esGestorModal) {
+            // Solo residentes del plan visualizado, activos este mes (B4)
+            html += `<div style="display:flex; gap:4px; margin-top:12px; border-top:1px solid #e2e8f0; padding-top:8px;"><select id="force-sel-${svcIdx}" style="margin:0; padding:4px; font-size:0.8rem;"><option value="">Añadir Residente...</option>${candidatosForce.map(r => `<option value="${r}">${r}</option>`).join('')}</select><button class="primary" style="background:var(--dark); color:white;" onclick="adminForceAssign('${dateKey}', '${svc.nombre}', ${y}, ${m}, ${d}, 'force-sel-${svcIdx}')">Poner</button></div>`;
+        }
     } else {
         const isMine = dayShifts[viewUser] === svc.nombre;
         let isIllegal = false; let tempShifts = JSON.parse(JSON.stringify(state.shifts || {}));
@@ -2614,6 +2635,8 @@ async function toggleShift(dateKey, svc) {
  */
 async function adminForceAssign(dateKey, svc, y, m, d, selectId) {
   if (simulatedViewUser !== null) { alert('⚠️ Estás en modo visualización. Sal de la simulación para realizar cambios.'); return; }
+  const _pvFA = getCurrentRotPlan(dateKey);
+  if (!puedeGestionarPlan(_pvFA, y, m)) { alert('⚠️ Solo puedes asignar guardias dentro de tu propio plan.'); return; }
   const res = document.getElementById(selectId).value; if (!res) return;
   let tempShifts = JSON.parse(JSON.stringify(state.shifts || {}));
   if (!tempShifts[dateKey]) tempShifts[dateKey] = {};
@@ -2630,6 +2653,8 @@ async function adminForceAssign(dateKey, svc, y, m, d, selectId) {
 /** Elimina la guardia de un residente desde el modal admin y reabre el modal actualizado. */
 async function adminForceRemove(dateKey, resToRemove, y, m, d) {
   if (simulatedViewUser !== null) { alert('⚠️ Estás en modo visualización. Sal de la simulación para realizar cambios.'); return; }
+  const _pvFR = getCurrentRotPlan(dateKey);
+  if (!puedeGestionarPlan(_pvFR, y, m)) { alert('⚠️ Solo puedes quitar guardias dentro de tu propio plan.'); return; }
   if (state.shifts[dateKey]) { delete state.shifts[dateKey][resToRemove]; if (Object.keys(state.shifts[dateKey] || {}).length === 0) delete state.shifts[dateKey]; }
   document.getElementById('shift-modal').remove(); renderMainCalendar(); await saveState(); openShiftModal(y, m, d, dateKey);
 }
@@ -6098,6 +6123,14 @@ async function toggleDiurna(dk, user, isDiurna) {
  * @param {'normal'|'partida_primera'|'partida_segunda'} modo
  */
 async function updateShiftMode(dk, user, modo) {
+    // Cambiar el régimen es gestión: solo admin o delegado del plan del residente afectado
+    if (isDelegado && !isAdmin) {
+        const parts = dk.split('_');
+        const _yMode = parseInt(parts[0], 10), _mMode = parseInt(parts[1], 10) - 1;
+        const perfilAfectado = globalProfiles.find(p => p.nombre_mostrar === user);
+        const planAfectado = perfilAfectado ? getPlanForUserOnDate(perfilAfectado, dk)?.nombre : getCurrentRotPlan(dk);
+        if (!puedeGestionarPlan(planAfectado, _yMode, _mMode)) { alert('⚠️ Solo puedes cambiar el régimen de guardias de tu propio plan.'); return; }
+    }
     if (!state.shiftModifiers) state.shiftModifiers = {};
     if (!state.shiftModifiers[dk]) state.shiftModifiers[dk] = {};
     if (!state.shiftModifiers[dk][user]) state.shiftModifiers[dk][user] = {};
