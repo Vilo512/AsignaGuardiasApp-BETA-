@@ -111,11 +111,20 @@ let curDate = new Date(2026, 0, 1);
 let selectedRotPlan = null;
 /**
  * Devuelve el nombre del plan de rotación activo para una dateKey dada.
- * Si el delegado tiene un plan seleccionado manualmente, tiene prioridad sobre el calculado.
+ * Prioridad: 1) si hay simulación activa, el plan del residente simulado (toda la app
+ * se ve desde su perspectiva); 2) si el delegado tiene un plan seleccionado manualmente,
+ * ese; 3) el plan calculado del usuario logueado.
  * @param {string} dk - dateKey "YYYY_MM_DD"
  * @returns {string} nombre del plan
  */
 function getCurrentRotPlan(dk) {
+    if (simulatedViewUser !== null) {
+        const sp = globalProfiles.find(pr => pr.nombre_mostrar === simulatedViewUser);
+        if (sp) {
+            const simPlan = getPlanForUserOnDate(sp, dk);
+            if (simPlan) return simPlan.nombre;
+        }
+    }
     if (isDelegado && selectedRotPlan && selectedRotPlan !== "AUTO") return selectedRotPlan;
     const p = getPlanForUserOnDate(currentUserProfile, dk);
     return p ? p.nombre : (promoConfig.planes?.[0]?.nombre || "Plan Base");
@@ -130,6 +139,9 @@ let showOnlyMine = false;
 let perfilHorasFiltroY = new Date().getFullYear();
 let perfilHorasFiltroM = new Date().getMonth(); // 0-indexed
 let promoConfig = { servicios: [] };
+let notificaciones = []; // Per-user, loaded from notificaciones table, NOT in state{}
+let notifPanelOpen = false;
+let _lastNotifTurnKey = null; // Session-level dedup key for turno_asignacion
 let globalProfiles = []; // Almacena las fechas de inicio/cambio de todos los residentes activos
 
 // ============================================================
@@ -269,6 +281,211 @@ async function saveState() {
   }
 }
 
+// ============================================================
+// MÓDULO: NOTIFICACIONES
+// Tabla Supabase: notificaciones (id uuid PK, usuario_id uuid FK→auth.users, tipo text, payload jsonb, leida bool, timestamp timestamptz)
+// ============================================================
+
+/** Inserts a notification for a user into the notificaciones table. Fire-and-forget; silently ignores errors (table may not exist yet). */
+async function insertNotificacion(usuarioId, tipo, payload) {
+    if (!usuarioId) return;
+    try {
+        await supabaseClient.from('notificaciones').insert({ usuario_id: usuarioId, tipo, payload, leida: false });
+        if (currentUserProfile && usuarioId === currentUserProfile.id) await loadNotificaciones();
+    } catch (e) { console.warn('[Notif] insert:', e?.message); }
+}
+
+/** Loads the most recent notifications for the current user from Supabase. */
+async function loadNotificaciones() {
+    if (!currentUserProfile?.id) return;
+    try {
+        const { data } = await supabaseClient.from('notificaciones').select('*').eq('usuario_id', currentUserProfile.id).order('timestamp', { ascending: false }).limit(60);
+        notificaciones = data || [];
+    } catch (e) { console.warn('[Notif] load:', e?.message); notificaciones = []; }
+    renderNotifBadge();
+    if (notifPanelOpen) renderNotifPanel();
+}
+
+/** Marks one notification as read locally and in Supabase. */
+async function markNotifRead(id) {
+    const n = notificaciones.find(x => x.id === id);
+    if (n && !n.leida) {
+        n.leida = true;
+        try { await supabaseClient.from('notificaciones').update({ leida: true }).eq('id', id); } catch (e) {}
+    }
+    renderNotifBadge();
+    if (notifPanelOpen) renderNotifPanel();
+}
+
+/** Marks all current user's unread notifications as read. */
+async function markAllNotifsRead() {
+    const anyUnread = notificaciones.some(n => !n.leida);
+    if (!anyUnread) return;
+    notificaciones.forEach(n => { n.leida = true; });
+    renderNotifBadge();
+    renderNotifPanel();
+    try { await supabaseClient.from('notificaciones').update({ leida: true }).eq('usuario_id', currentUserProfile.id).eq('leida', false); } catch (e) {}
+}
+
+/** Updates the bell badge unread count. */
+function renderNotifBadge() {
+    const count = notificaciones.filter(n => !n.leida).length;
+    const badge = document.getElementById('notif-badge');
+    if (!badge) return;
+    badge.textContent = count > 9 ? '9+' : String(count);
+    badge.style.display = count > 0 ? 'flex' : 'none';
+}
+
+/** Formats a timestamp as a relative Spanish string ("hace 5 min", "ayer", …). */
+function timeAgo(ts) {
+    const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+    if (diff < 60) return 'hace un momento';
+    if (diff < 3600) return `hace ${Math.floor(diff / 60)} min`;
+    if (diff < 86400) return `hace ${Math.floor(diff / 3600)} h`;
+    if (diff < 172800) return 'ayer';
+    return new Date(ts).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+}
+
+/** Returns icon, background color, icon color and title for a notification type. */
+function getNotifMeta(tipo) {
+    const M = {
+        turno_asignacion:    { icon: '🕐', bg: '#B5D4F4', color: '#0C447C', title: 'Es tu turno' },
+        guardia_forzada:     { icon: '⚠️', bg: '#F5C4B3', color: '#993C1D', title: 'Guardia asignada' },
+        ventana_voluntaria:  { icon: '📅', bg: '#B5D4F4', color: '#0C447C', title: 'Ventana voluntaria abierta' },
+        propuesta_mercadillo:{ icon: '🔄', bg: '#C0DD97', color: '#3B6D11', title: 'Propuesta recibida' },
+        propuesta_resuelta:  { icon: '✅', bg: '#C0DD97', color: '#3B6D11', title: 'Propuesta resuelta' },
+        hueco_sin_candidato: { icon: '🚨', bg: '#F7C1C1', color: '#A32D2D', title: 'Hueco sin candidato' },
+    };
+    return M[tipo] || { icon: '🔔', bg: '#e2e8f0', color: '#475569', title: 'Notificación' };
+}
+
+/** Builds the human-readable description from a notification's payload. */
+function getNotifDesc(tipo, payload) {
+    const p = payload || {};
+    switch (tipo) {
+        case 'turno_asignacion':    return `Te toca elegir guardias de ${p.mes || ''}.`;
+        case 'guardia_forzada':     return `Se te ha asignado una guardia de ${p.servicio || ''} el ${p.fecha || ''}.`;
+        case 'ventana_voluntaria':  return `La ventana voluntaria de ${p.servicio || ''} en ${p.mes || ''} está abierta. Puedes reclamar huecos libremente.`;
+        case 'propuesta_mercadillo':return `${p.proponente || 'Alguien'} te propone un ${p.tipo || 'cambio'} el ${p.fecha || ''}.`;
+        case 'propuesta_resuelta':  return `Tu propuesta del ${p.fecha || ''} fue ${p.resultado || 'procesada'}.`;
+        case 'hueco_sin_candidato': return `${p.count || 1} hueco(s) de ${p.servicio || ''} sin candidato válido.`;
+        default: return '';
+    }
+}
+
+/** Renders the notification dropdown panel into #notif-panel. */
+function renderNotifPanel() {
+    const panel = document.getElementById('notif-panel');
+    if (!panel) return;
+    const unread = notificaciones.filter(n => !n.leida).length;
+    let html = `<div class="notif-panel__header"><span class="notif-panel__title">Notificaciones</span>${unread > 0 ? `<a class="notif-panel__read-all" onclick="markAllNotifsRead()">marcar todas como leídas</a>` : ''}</div><div class="notif-panel__list">`;
+    if (notificaciones.length === 0) {
+        html += `<div class="notif-empty">No tienes notificaciones</div>`;
+    } else {
+        for (const n of notificaciones) {
+            const meta = getNotifMeta(n.tipo);
+            const desc = getNotifDesc(n.tipo, n.payload);
+            const isAction = n.tipo === 'propuesta_mercadillo' && n.payload?.trade_id;
+            html += `<div class="notif-item${n.leida ? '' : ' notif-item--unread'}" onclick="handleNotifClick('${n.id}','${n.tipo}')">`;
+            html += `<div class="notif-item__icon" style="background:${meta.bg};"><span style="color:${meta.color};">${meta.icon}</span></div>`;
+            html += `<div class="notif-item__content"><div class="notif-item__title">${meta.title}</div><div class="notif-item__desc">${desc}</div><div class="notif-item__time">${timeAgo(n.timestamp)}</div>`;
+            if (isAction) {
+                html += `<div class="notif-item__actions" onclick="event.stopPropagation()"><button class="primary" style="background:var(--ped);" onclick="notifAceptarTrade(${n.payload.trade_id},'${n.id}')">Aceptar</button><button class="danger" onclick="notifRechazarTrade(${n.payload.trade_id},'${n.id}')">Rechazar</button></div>`;
+            }
+            html += `</div>${!n.leida ? '<div class="notif-item__dot"></div>' : ''}</div>`;
+        }
+    }
+    html += `</div>`;
+    panel.innerHTML = html;
+}
+
+/** Handles clicking a notification: marks read, closes panel, navigates to context. */
+async function handleNotifClick(id, tipo) {
+    const n = notificaciones.find(x => x.id === id);
+    if (!n) return;
+    await markNotifRead(id);
+    if (notifPanelOpen) toggleNotifPanel();
+    const p = n.payload || {};
+    if (p.year !== undefined && p.month !== undefined) curDate = new Date(p.year, p.month, 1);
+    if (['turno_asignacion', 'guardia_forzada', 'ventana_voluntaria'].includes(tipo)) nav('cal');
+    else if (['propuesta_mercadillo', 'propuesta_resuelta'].includes(tipo)) nav('merc');
+    else if (tipo === 'hueco_sin_candidato' && isDelegado) nav('admin');
+}
+
+/** Accepts a pending trade from the notification panel. */
+async function notifAceptarTrade(tradeId, notifId) {
+    await processTrade(tradeId, true);
+    await markNotifRead(notifId);
+}
+
+/** Rejects a pending trade from the notification panel. */
+async function notifRechazarTrade(tradeId, notifId) {
+    await processTrade(tradeId, false);
+    await markNotifRead(notifId);
+}
+
+/** Toggles the notification panel open/closed. */
+function toggleNotifPanel() {
+    notifPanelOpen = !notifPanelOpen;
+    const panel = document.getElementById('notif-panel');
+    if (!panel) return;
+    if (notifPanelOpen) {
+        renderNotifPanel();
+        panel.style.display = 'flex';
+        // Defer so this click doesn't immediately close the panel
+        setTimeout(() => document.addEventListener('click', _closeNotifOnOutside, { capture: true }), 0);
+    } else {
+        panel.style.display = 'none';
+        document.removeEventListener('click', _closeNotifOnOutside, { capture: true });
+    }
+}
+
+function _closeNotifOnOutside(e) {
+    const panel = document.getElementById('notif-panel');
+    const btn = document.getElementById('notif-btn');
+    if (panel && panel.contains(e.target)) return; // Click inside panel — keep open
+    if (btn && btn.contains(e.target)) return;      // Click on the bell button — toggleNotifPanel handles it
+    panel.style.display = 'none';
+    notifPanelOpen = false;
+    document.removeEventListener('click', _closeNotifOnOutside, { capture: true });
+}
+
+/** Fires a turno_asignacion notification when the turn holder changes (session-level dedup). */
+async function maybeNotifyTurnChange(y, m) {
+    const turnUser = getCurrentTurn(y, m);
+    if (!turnUser) return;
+    const key = `${y}_${m}_${turnUser}`;
+    if (key === _lastNotifTurnKey) return;
+    _lastNotifTurnKey = key;
+    const profile = globalProfiles.find(p => p.nombre_mostrar === turnUser);
+    if (!profile) return;
+    await insertNotificacion(profile.id, 'turno_asignacion', { year: y, month: m, mes: MONTHS[m] + ' ' + y, residente: turnUser });
+}
+
+/** Sends propuesta_mercadillo to the trade target when a new pending trade is created. */
+async function _notifyNewTrade(trade) {
+    if (!trade || trade.target === 'Externo' || trade.status !== 'pending') return;
+    const targetProf = globalProfiles.find(p => p.nombre_mostrar === trade.target);
+    if (!targetProf) return;
+    const parts = (trade.d1 || '').split('_');
+    const year = parseInt(parts[0]) || curDate.getFullYear();
+    const month = (parseInt(parts[1]) || (curDate.getMonth() + 1)) - 1;
+    await insertNotificacion(targetProf.id, 'propuesta_mercadillo', { trade_id: trade.id, proponente: trade.requester, tipo: trade.type, fecha: formatDK(trade.d1), year, month });
+}
+
+/** Sends propuesta_resuelta to the trade requester after a pending trade is approved or rejected. */
+async function _notifyTradeResolved(tradeId) {
+    const t = state.trades.find(x => x.id === tradeId);
+    if (!t || !['approved', 'rejected'].includes(t.status)) return;
+    if (t.requester === loggedInUser) return; // Requester is the one approving — skip
+    const reqProf = globalProfiles.find(p => p.nombre_mostrar === t.requester);
+    if (!reqProf) return;
+    const parts = (t.d1 || '').split('_');
+    const year = parseInt(parts[0]) || curDate.getFullYear();
+    const month = (parseInt(parts[1]) || (curDate.getMonth() + 1)) - 1;
+    await insertNotificacion(reqProf.id, 'propuesta_resuelta', { trade_id: t.id, tipo: t.type, fecha: formatDK(t.d1), resultado: t.status === 'approved' ? 'aceptada' : 'rechazada', year, month });
+}
+
 /**
  * Rellena campos opcionales de una configuración de promoción con valores por defecto.
  * También realiza la migración desde el formato antiguo (config.servicios) al nuevo (config.planes).
@@ -370,6 +587,7 @@ async function loadState() {
     setStatus('Sincronizado ✅');
     checkAutomaticGraduation();
     renderAll();
+    loadNotificaciones(); // N1: load per-user notifications (fire-and-forget)
   } catch (err) {
     console.error("Error al cargar:", err);
     setStatus('Error de red ❌', true);
@@ -621,6 +839,17 @@ function exitSimulationMode() {
     renderAll();
 }
 
+/** Repuebla el selector de residentes del toolbar admin con los del plan elegido. */
+function onAdminPlanChange(y, m) {
+    const planSel = document.getElementById('sel-admin-plan')?.value;
+    const selRes = document.getElementById('sel-admin-resident');
+    if (!planSel || !selRes) return;
+    const opts = getResidentesActivosEnMes(y, m)
+        .filter(r => residentePerteneceAPlan(r, planSel, y, m))
+        .map(r => `<option value="${r}">${r}</option>`).join('');
+    selRes.innerHTML = '<option value="">— Residente —</option>' + opts;
+}
+
 /** Muestra u oculta el selector de residente según la acción de admin elegida (grant/simulate). */
 function onAdminModeChange() {
     const mode = document.getElementById('sel-admin-mode')?.value;
@@ -647,6 +876,10 @@ function onAdminActionConfirm(y, m) {
     if (!mode || !res) return alert('Selecciona una acción y un residente.');
     if (mode === 'grant') {
         if (simulatedViewUser !== null) { alert('⚠️ Estás en modo visualización. Sal de la simulación para realizar cambios.'); return; }
+        // El plan de referencia es el del subselector del toolbar (por defecto, el visualizado)
+        const planSel = document.getElementById('sel-admin-plan')?.value || getCurrentRotPlan(formatDateKey(y, m, 1));
+        if (!puedeGestionarPlan(planSel, y, m)) { alert('⚠️ Solo puedes otorgar turnos dentro de tu propio plan de guardias.'); return; }
+        if (!residentePerteneceAPlan(res, planSel, y, m)) { alert('⚠️ Ese residente no pertenece al plan seleccionado este mes.'); return; }
         if (!state.grantedTurn) state.grantedTurn = {};
         state.grantedTurn[getRotationKey(y, m)] = res;
         if (!state.exceptionLogs) state.exceptionLogs = [];
@@ -661,6 +894,9 @@ function renderUserHeader() {
   const el = document.getElementById('user-display');
   if (authSession) el.innerHTML = `<div class="user-badge">👤 ${getInitials(loggedInUser)} <button onclick="logoutUser()" style="padding:2px 6px; font-size:0.7rem; margin-left:4px; border:none; background:rgba(0,0,0,0.1); color:var(--dark); border-radius:4px;">Salir</button></div>`;
   else el.innerHTML = `<button onclick="loginWithGoogle()" class="primary" style="padding:0.3rem 0.8rem; font-size:0.8rem; background: #ea4335; border:none; color:white;">Entrar con Google</button>`;
+  // Show bell only when fully logged-in and approved
+  const notifWrapper = document.getElementById('notif-wrapper');
+  if (notifWrapper) notifWrapper.style.display = (authSession && currentUserProfile?.estado === 'aprobado') ? 'block' : 'none';
 }
 
 // ============================================================
@@ -692,11 +928,17 @@ function getUserLevelOnDate(userProfile, dateKey) {
     // EL SALVAVIDAS: Si no ha configurado el cambio de contrato, usamos su fecha de inicio
     let savedDate = userProfile.fecha_cambio_contrato || userProfile.fecha_inicio_residencia;
     const cambioParts = savedDate.split('-');
-    const targetChangeDate = new Date(targetDate.getFullYear(), parseInt(cambioParts[1]) - 1, parseInt(cambioParts[2]));
+
+    // 🗓️ REGLA MENSUAL: el nivel/plan nunca cambia a mitad de mes. El mes que contiene
+    // la fecha de cambio de contrato cuenta ENTERO como el nivel nuevo (el posterior):
+    // cambio el 27/05 → todo mayo ya es R2. Se comparan meses completos, no días.
+    const cambioMes = parseInt(cambioParts[1], 10) - 1;
+    const efectivoVal = targetDate.getFullYear() * 12 + cambioMes;
+    const targetVal = targetDate.getFullYear() * 12 + targetDate.getMonth();
 
     let level = targetDate.getFullYear() - startDate.getFullYear() + 1;
-    if (targetDate < targetChangeDate) level--; // Aún no ha cruzado su fecha este año
-    
+    if (targetVal < efectivoVal) level--; // Aún no ha cruzado su mes de cambio este año
+
     return Math.max(1, level);
 }
 
@@ -957,21 +1199,10 @@ function getRotation(y, m, forcedPlanName) {
     for (let v = baseVal + 1; v <= targetVal; v++) {
         const curY = Math.floor(v / 12);
         const curM = v % 12;
-        const iterDk = formatDateKey(curY, curM, 1);
-        
+
         // 1. Calcular quiénes pertenecen matemáticamente a este Plan en este mes
-        const eligible = globalProfiles.filter(p => {
-            if (p.estado === 'historico') {
-                const ev = state.historialEventos[p.nombre_mostrar];
-                if (ev && ev.salida) {
-                    const parts = ev.salida.split('-');
-                    const salVal = parseInt(parts[0], 10) * 12 + parseInt(parts[1], 10) - 1;
-                    if (v > salVal) return false;
-                }
-            }
-            const userPlan = getPlanForUserOnDate(p, iterDk);
-            return userPlan && userPlan.nombre === planName;
-        }).map(p => p.nombre_mostrar);
+        // (fuente única B3: excluye graduados e históricos ya salidos; incluye virtuales)
+        const eligible = getResidentesDePlan(planName, curY, curM);
         
         // 2. Extraer a los que ya no pertenecen manteniendo los grupos. Los residentes virtuales (que no están en globalProfiles) se mantienen para que sigan rotando de forma indefinida en su plan original.
         currentGroups = currentGroups.map(g => g.filter(n => {
@@ -1085,6 +1316,127 @@ function getAllResidents() {
     return list;
 }
 
+/**
+ * Indica si un residente (real o virtual) pertenece al plan dado en el mes dado.
+ * Fuente única de la compartimentación por plan: los perfiles reales se resuelven
+ * por fechas de contrato (getPlanForUserOnDate, día 1 como referencia del mes —
+ * el nivel es mensual y solo cambia en frontera de mes, ver getUserLevelOnDate);
+ * los virtuales (sin perfil en globalProfiles) pertenecen al plan en cuyos
+ * baseGroups figuran. No aplica exclusiones de estado (graduados, históricos,
+ * aprobación): eso lo decide cada caller o getResidentesDePlan.
+ * @param {string} nombre - nombre_mostrar
+ * @param {string} planName
+ * @param {number} y
+ * @param {number} m - 0-indexed
+ * @returns {boolean}
+ */
+function residentePerteneceAPlan(nombre, planName, y, m) {
+    const perfil = globalProfiles.find(p => p.nombre_mostrar === nombre);
+    if (perfil) {
+        const plan = getPlanForUserOnDate(perfil, formatDateKey(y, m, 1));
+        return !!plan && plan.nombre === planName;
+    }
+    return (state.planRotations?.[planName]?.baseGroups || []).flat().includes(nombre);
+}
+
+/**
+ * Devuelve los residentes de un plan de guardias en un mes concreto, aplicando la
+ * regla de producto: cada residente solo ve/opera con los compañeros de su plan.
+ * Excluye graduados (state.graduados) e históricos cuya salida (state.historialEventos)
+ * sea anterior al mes consultado. Incluye a los virtuales del plan (baseGroups sin
+ * perfil real), que siguen rotando indefinidamente en su plan original.
+ * @param {string} planName
+ * @param {number} y
+ * @param {number} m - 0-indexed
+ * @param {Object} [opts]
+ * @param {boolean} [opts.soloAprobados=false] - exige estado 'aprobado' en perfiles reales
+ * @returns {string[]} array de nombre_mostrar
+ */
+function getResidentesDePlan(planName, y, m, opts = {}) {
+    const mesVal = y * 12 + m;
+    const out = [];
+
+    for (const p of (globalProfiles || [])) {
+        const n = p.nombre_mostrar;
+        if (state.graduados && state.graduados.includes(n)) continue;
+        if (opts.soloAprobados && p.estado !== 'aprobado') continue;
+        if (p.estado === 'historico') {
+            const ev = state.historialEventos?.[n];
+            if (ev && ev.salida) {
+                const parts = ev.salida.split('-');
+                const salVal = parseInt(parts[0], 10) * 12 + parseInt(parts[1], 10) - 1;
+                if (mesVal > salVal) continue;
+            }
+        }
+        if (residentePerteneceAPlan(n, planName, y, m)) out.push(n);
+    }
+
+    const flatBase = (state.planRotations?.[planName]?.baseGroups || []).flat();
+    for (const n of flatBase) {
+        if (globalProfiles.some(p => p.nombre_mostrar === n)) continue;
+        if (state.graduados && state.graduados.includes(n)) continue;
+        if (!out.includes(n)) out.push(n);
+    }
+    return out;
+}
+
+/**
+ * Indica si el usuario logueado puede GESTIONAR (editar rotación, otorgar/saltar turno,
+ * forzar subasta) el plan dado en el mes dado. El admin gestiona todos los planes;
+ * el delegado solo el plan que le corresponde por contrato en ese mes (puede VER otros
+ * planes con el selector, pero en solo-lectura).
+ * @param {string} planName
+ * @param {number} y
+ * @param {number} m - 0-indexed
+ * @returns {boolean}
+ */
+function puedeGestionarPlan(planName, y, m) {
+    if (isAdmin) return true;
+    if (!isDelegado) return false;
+    const propio = getPlanForUserOnDate(currentUserProfile, formatDateKey(y, m, 1));
+    return !!propio && propio.nombre === planName;
+}
+
+/**
+ * Construye el contexto de visibilidad del plan visualizado para un mes (B1):
+ * nombre del plan (simulación > selector de delegado > plan propio), sus residentes
+ * (sin graduados ni históricos salidos) y los nombres de sus servicios.
+ * @param {number} y
+ * @param {number} m - 0-indexed
+ * @returns {{planName: string, residentes: string[], svcNames: string[], y: number, m: number}|null}
+ *          null si no hay sesión (vista pública: se muestra todo)
+ */
+function getPlanVistaContext(y, m) {
+    if (!currentUserProfile) return null;
+    const planName = getCurrentRotPlan(formatDateKey(y, m, 1));
+    const plan = (promoConfig.planes || []).find(p => p.nombre === planName);
+    return {
+        planName, y, m,
+        residentes: getResidentesDePlan(planName, y, m),
+        svcNames: plan ? plan.servicios.map(s => s.nombre) : (promoConfig.servicios || []).map(s => s.nombre)
+    };
+}
+
+/**
+ * Indica si el titular de una guardia debe mostrarse en el calendario del plan del
+ * contexto: miembros del plan siempre; Externo/VRE solo en servicios del plan; foráneos
+ * (residentes de otro plan cubriendo una guardia de este) solo si su propio plan no
+ * reclama ese servicio — misma regla anti-colisión de nombres que el exportador.
+ * @param {string} u - nombre_mostrar del titular
+ * @param {string} svcNombre
+ * @param {Object|null} ctx - resultado de getPlanVistaContext (null = sin filtro)
+ * @returns {boolean}
+ */
+function esTitularVisibleEnPlan(u, svcNombre, ctx) {
+    if (!ctx) return true;
+    if (ctx.residentes.includes(u)) return true;
+    if (!ctx.svcNames.includes(svcNombre)) return false;
+    if (u === 'Externo' || u.startsWith('VRE')) return true;
+    const propioPlan = (promoConfig.planes || []).find(p =>
+        p.nombre !== ctx.planName && residentePerteneceAPlan(u, p.nombre, ctx.y, ctx.m));
+    return !(propioPlan && propioPlan.servicios.some(s => s.nombre === svcNombre));
+}
+
 
 // ============================================================
 // MÓDULO: MOTOR_EVALUACION
@@ -1195,7 +1547,7 @@ function getUserProgress(user, y, m) {
     let uProfile = globalProfiles.find(p => p.nombre_mostrar === user);
     let activePlan = null;
     if (uProfile) {
-        const referenceDk = formatDateKey(y, m, 15);
+        const referenceDk = formatDateKey(y, m, 1);
         activePlan = getPlanForUserOnDate(uProfile, referenceDk);
     } else {
         // Es un residente virtual. Buscamos en qué plan de state.planRotations está su nombre en baseGroups
@@ -1210,7 +1562,7 @@ function getUserProgress(user, y, m) {
             }
         }
         if (!activePlan) {
-            const referenceDk = formatDateKey(y, m, 15);
+            const referenceDk = formatDateKey(y, m, 1);
             activePlan = getPlanForUserOnDate(currentUserProfile, referenceDk);
         }
     }
@@ -1900,7 +2252,14 @@ function renderMainCalendar() {
     
     if (isDelegado && simulatedViewUser === null) {
        if (!state.grantedTurn) state.grantedTurn = {};
-       const granted = state.grantedTurn[monthKey];
+       // 🧭 Contexto de plan: el banner del delegado/admin muestra el turno/subasta del
+       // plan visualizado (selector de rotación o su plan propio). Las acciones de
+       // gestión solo se ofrecen si puede gestionar ese plan.
+       const planVista = getCurrentRotPlan(formatDateKey(y, m, 1));
+       const esGestor = puedeGestionarPlan(planVista, y, m);
+       // El turno otorgado solo es relevante aquí si el agraciado pertenece al plan visualizado
+       const grantedRaw = state.grantedTurn[monthKey];
+       const granted = (grantedRaw && residentePerteneceAPlan(grantedRaw, planVista, y, m)) ? grantedRaw : null;
        let html = `<div style="background:#f1f5f9; border:1px solid #cbd5e1; color:#475569; padding:10px 12px; border-radius:8px; margin-bottom:1rem; font-size:0.85rem; display:flex; flex-direction:column; gap:8px;">`;
        const af = !turnUser ? getAnalisisFestivos(y, m) : null;
        let turnLabel;
@@ -1917,27 +2276,37 @@ function renderMainCalendar() {
        } else {
            turnLabel = `${isAdmin ? '👑 <b>Modo Admin</b>' : '⭐ <b>Modo Delegado</b>'}. Turno de: <b>${turnUser}</b> ${pendingReasonForTurn ? '<span style="color:var(--fest);">(🛑 PENDIENTE)</span>' : ''}`;
        }
-       html += `<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;"><span>${turnLabel}</span><div style="display:flex; gap:8px;">`;
-       if (turnUser) {
-         html += `<button class="danger" style="padding:4px 8px; font-size:0.75rem;" onclick="adminSkipTurn('${turnUser}', ${y}, ${m})">Saltar turno ⏭️</button>`;
-         if (granted) html += `<button class="primary" style="padding:4px 8px; font-size:0.75rem; background:#7c3aed;" onclick="adminClearGrantedTurn(${y}, ${m})">❌ Cancelar turno otorgado</button>`;
-       } else if (af && (af.estado === 'subasta_cerrada' || af.estado === 'critico')) {
-           html += `<button class="primary" style="padding:4px 8px; font-size:0.75rem; background:var(--fest); color:white;" onclick="ejecutarAsignacionForzosa(${y}, ${m}, '${af.svcNombre}')">⚡ Forzosa</button>`;
+       html += `<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;"><span>📋 <b>${planVista}</b> · ${turnLabel}${!esGestor ? ' <span style="font-size:0.7rem; color:#94a3b8;">(solo lectura: no es tu plan)</span>' : ''}</span><div style="display:flex; gap:8px;">`;
+       if (esGestor) {
+         if (turnUser) {
+           html += `<button class="danger" style="padding:4px 8px; font-size:0.75rem;" onclick="adminSkipTurn('${turnUser}', ${y}, ${m})">Saltar turno ⏭️</button>`;
+           if (granted) html += `<button class="primary" style="padding:4px 8px; font-size:0.75rem; background:#7c3aed;" onclick="adminClearGrantedTurn(${y}, ${m})">❌ Cancelar turno otorgado</button>`;
+         } else if (af && (af.estado === 'subasta_cerrada' || af.estado === 'critico')) {
+             html += `<button class="primary" style="padding:4px 8px; font-size:0.75rem; background:var(--fest); color:white;" onclick="ejecutarAsignacionForzosa(${y}, ${m}, '${af.svcNombre}')">⚡ Forzosa</button>`;
+         }
        }
-       html += `<button class="danger" style="padding:4px 8px; font-size:0.75rem; background:var(--fest); color:white;" onclick="adminResetMonth(${y}, ${m})">⚠️ Reset Mes</button></div></div>`;
-       // Toolbar unificado: Otorgar turno / Visualizar como
-       const activosToolbar = getResidentesActivosEnMes(y, m);
+       // El reset borra el mes de TODOS los planes → exclusivo del admin
+       if (isAdmin) html += `<button class="danger" style="padding:4px 8px; font-size:0.75rem; background:var(--fest); color:white;" onclick="adminResetMonth(${y}, ${m})">⚠️ Reset Mes</button>`;
+       html += `</div></div>`;
+       // Toolbar unificado: Otorgar turno / Visualizar como — solo residentes del plan visualizado
+       // Subselector de promoción: por defecto el plan visualizado, pero se puede cambiar
+       // para listar los residentes de otro plan (ej. admin R2 visualizando a una R1).
+       const activosToolbar = getResidentesActivosEnMes(y, m).filter(r => residentePerteneceAPlan(r, planVista, y, m));
        const optsToolbar = activosToolbar.map(r => `<option value="${r}">${r}</option>`).join('');
+       const optsPlanesToolbar = (promoConfig.planes || []).map(p => `<option value="${p.nombre}" ${p.nombre === planVista ? 'selected' : ''}>${p.nombre}</option>`).join('');
        html += `<div class="admin-action-toolbar">
            <div class="admin-action-toolbar__mode-row">
                <span class="admin-action-toolbar__mode-label">Acción:</span>
                <select id="sel-admin-mode" class="admin-action-toolbar__mode-select" onchange="onAdminModeChange()">
                    <option value="">— Seleccionar acción —</option>
-                   <option value="grant">🎁 Otorgar turno a...</option>
+                   ${esGestor ? '<option value="grant">🎁 Otorgar turno a...</option>' : ''}
                    <option value="simulate">👁 Visualizar como...</option>
                </select>
            </div>
            <div id="admin-action-resident-row" class="admin-action-toolbar__resident-row">
+               <select id="sel-admin-plan" class="admin-action-toolbar__resident-select" style="flex:0 1 auto;" title="Promoción / Plan de guardias" onchange="onAdminPlanChange(${y}, ${m})">
+                   ${optsPlanesToolbar}
+               </select>
                <select id="sel-admin-resident" class="admin-action-toolbar__resident-select">
                    <option value="">— Residente —</option>
                    ${optsToolbar}
@@ -2043,12 +2412,12 @@ function renderMainCalendar() {
   // Obtenemos todos los servicios disponibles globalmente para pintar los iconos
   const todosLosServicios = getAllUniqueServices();
   
-  let userLevelName = 'ALL';
-  if (currentUserProfile) {
-      const plan = getPlanForUserOnDate(currentUserProfile, formatDateKey(y, m, 1));
-      if (plan) userLevelName = plan.nombre;
-  }
-  
+  // 🧭 B1: todo el calendario se pinta desde el contexto del plan visualizado
+  // (simulación > selector de delegado > plan propio). Cada residente ve únicamente
+  // los días habilitados, servicios y compañeros de su plan.
+  const planVistaCtx = getPlanVistaContext(y, m);
+  const userLevelName = planVistaCtx ? planVistaCtx.planName : 'ALL';
+
   for(let d=1; d<=getDaysInMonth(y,m); d++) {
     const dateKey = formatDateKey(y, m, d);
     const dayShifts = state.shifts[dateKey] || {};
@@ -2069,14 +2438,18 @@ function renderMainCalendar() {
 
     // 🛡️ AQUÍ ESTABA EL ERROR: Recorremos los servicios definidos arriba
     todosLosServicios.forEach(svc => {
-        let assigned = Object.keys(dayShifts || {}).filter(u => dayShifts[u] === svc.nombre);
+        // 🧭 B1: los servicios que no pertenecen al plan visualizado no se pintan
+        if (planVistaCtx && !planVistaCtx.svcNames.includes(svc.nombre)) return;
+        let assigned = Object.keys(dayShifts || {}).filter(u =>
+            dayShifts[u] === svc.nombre && esTitularVisibleEnPlan(u, svc.nombre, planVistaCtx));
         if (showOnlyMine && (simulatedViewUser || loggedInUser)) assigned = assigned.filter(u => u === (simulatedViewUser ?? loggedInUser));
         assigned.forEach(u => {
             html += `<div class="shift-badge" style="background:${svc.color};">👤 ${getInitials(u)}</div>`;
         });
         const pd = getPlazasForDay(svc, dateKey);
         if (pd > 1) {
-            const filled = Object.keys(dayShifts || {}).filter(u => dayShifts[u] === svc.nombre).length;
+            const filled = Object.keys(dayShifts || {}).filter(u =>
+                dayShifts[u] === svc.nombre && esTitularVisibleEnPlan(u, svc.nombre, planVistaCtx)).length;
             multihuecoItems.push({ color: svc.color, filled, pd });
         }
     });
@@ -2127,8 +2500,12 @@ function openShiftModal(y, m, d, dateKey) {
   const _analisisModal = getAnalisisFestivos(y, m);
   const isSubastaAbierta = _analisisModal.estado === 'subasta_abierta';
 
-  // DETERMINACIÓN DIARIA: ¿Qué plan tengo yo HOY en el calendario?
-  const myPlanOnDate = getPlanForUserOnDate(currentUserProfile, dateKey);
+  // DETERMINACIÓN DIARIA: plan del usuario EFECTIVO en esta fecha. Si hay simulación
+  // activa, el del residente simulado (currentUserProfile sigue siendo el admin).
+  const viewProfile = (simulatedViewUser !== null
+      ? globalProfiles.find(p => p.nombre_mostrar === simulatedViewUser)
+      : null) || currentUserProfile;
+  const myPlanOnDate = getPlanForUserOnDate(viewProfile, dateKey);
   const serviciosDisponibles = myPlanOnDate ? myPlanOnDate.servicios : [];
   const pDataFull = getUserProgress(viewUser, y, m).progress;
   const theTag = getDayTag(y, m, d);
@@ -2229,6 +2606,7 @@ async function toggleShift(dateKey, svc) {
   else state.shifts[dateKey][loggedInUser] = svc;
   if (Object.keys(state.shifts[dateKey] || {}).length === 0) delete state.shifts[dateKey];
   document.getElementById('shift-modal').remove(); renderMainCalendar(); await saveState();
+  maybeNotifyTurnChange(curDate.getFullYear(), curDate.getMonth());
 }
 /**
  * Asigna forzosamente una guardia a un residente seleccionado desde el modal de admin.
@@ -2277,6 +2655,7 @@ async function userSkipTurn(y, m) {
     let chosenShifts = []; for(let d=1; d<=getDaysInMonth(y, m); d++) { const dk = formatDateKey(y, m, d); if (state.shifts[dk] && state.shifts[dk][loggedInUser]) chosenShifts.push(`Día ${d} (${state.shifts[dk][loggedInUser]})`); }
     if (!state.exceptionLogs) state.exceptionLogs = []; state.exceptionLogs.push({ user: loggedInUser, monthStr: `${MONTHS[m]} ${y}`, reason: val, shiftsSummary: chosenShifts.length > 0 ? chosenShifts.join(', ') : 'Ninguna', timestamp: new Date().toLocaleString('es-ES') });
     await saveState(); checkAutomaticGraduation();
+    maybeNotifyTurnChange(y, m);
     renderAll();
 }
 /**
@@ -2287,6 +2666,8 @@ async function userSkipTurn(y, m) {
  */
 async function adminSkipTurn(turnUser, y, m) {
    if (simulatedViewUser !== null) { alert('⚠️ Estás en modo visualización. Sal de la simulación para realizar cambios.'); return; }
+   const _planVista = getCurrentRotPlan(formatDateKey(y, m, 1));
+   if (!puedeGestionarPlan(_planVista, y, m)) { alert('⚠️ Solo puedes saltar turnos de tu propio plan de guardias.'); return; }
    if(!confirm(`¿Saltar forzosamente el turno de ${turnUser}?`)) return;
    const monthKey = getRotationKey(y, m);
    if (!state.skippedTurns[monthKey]) state.skippedTurns[monthKey] = [];
@@ -2294,6 +2675,7 @@ async function adminSkipTurn(turnUser, y, m) {
    let chosenShifts = []; for(let d=1; d<=getDaysInMonth(y, m); d++) { const dk = formatDateKey(y, m, d); if (state.shifts[dk] && state.shifts[dk][turnUser]) chosenShifts.push(`Día ${d} (${state.shifts[dk][turnUser]})`); }
    if (!state.exceptionLogs) state.exceptionLogs = []; state.exceptionLogs.push({ user: turnUser, monthStr: `${MONTHS[m]} ${y}`, reason: "Admin Override", shiftsSummary: chosenShifts.length > 0 ? chosenShifts.join(', ') : 'Ninguna', timestamp: new Date().toLocaleString('es-ES') });
    await saveState(); checkAutomaticGraduation();
+   maybeNotifyTurnChange(y, m);
     renderAll();
 }
 
@@ -2324,6 +2706,7 @@ async function adminGrantTurn(y, m) {
         shiftsSummary: '', timestamp: new Date().toLocaleString('es-ES')
     });
     await saveState();
+    maybeNotifyTurnChange(y, m);
     renderAll();
 }
 
@@ -2351,11 +2734,9 @@ function renderMercadoCalendar() {
   else { document.getElementById('merc-logged-zone').style.display = 'none'; document.getElementById('merc-unlogged-zone').style.display = 'block'; }
   for(let i=0; i<getFirstDayOffset(y,m); i++) grid.innerHTML += `<div class="cal-cell empty"></div>`;
   
-  let userLevelName = 'ALL';
-  if (currentUserProfile) {
-      const plan = getPlanForUserOnDate(currentUserProfile, formatDateKey(y, m, 1));
-      if (plan) userLevelName = plan.nombre;
-  }
+  // 🧭 B1: mismo contexto de plan visualizado que el calendario principal
+  const planVistaCtxMerc = getPlanVistaContext(y, m);
+  const userLevelName = planVistaCtxMerc ? planVistaCtxMerc.planName : 'ALL';
   for(let d=1; d<=getDaysInMonth(y,m); d++) {
     const dk = formatDateKey(y, m, d);
     const dayShifts = computed[dk] || {};
@@ -2364,9 +2745,11 @@ function renderMercadoCalendar() {
     const bgStyle = getCellBackgroundStyle(dk, y, m, d, userLevelName);
     if (bgStyle) cell.setAttribute('style', bgStyle);
     let html = `<div class="day-number">${d}</div>`;
-    
+
     promoConfig.servicios.forEach(svc => {
-        let assigned = Object.keys(dayShifts || {}).filter(u => dayShifts[u] === svc.nombre);
+        if (planVistaCtxMerc && !planVistaCtxMerc.svcNames.includes(svc.nombre)) return;
+        let assigned = Object.keys(dayShifts || {}).filter(u =>
+            dayShifts[u] === svc.nombre && esTitularVisibleEnPlan(u, svc.nombre, planVistaCtxMerc));
         if (showOnlyMine && (simulatedViewUser || loggedInUser)) assigned = assigned.filter(u => u === (simulatedViewUser ?? loggedInUser));
         assigned.forEach(u => {
             let isVre = u.startsWith('VRE');
@@ -2448,16 +2831,16 @@ function renderMercadoVender(dk, svc) {
     document.getElementById('mercado-dynamic').innerHTML = `<h4 style="margin-bottom:1rem;">Vender guardia de ${svc}</h4><label style="font-size:0.85rem; color:#64748b;">¿A quién se la vendes?</label><select id="vender-to-user"><option value="">-- Selecciona --</option><option value="Externo">👽 Otro Residente (Externo)</option>${res.map(r => `<option value="${r}">${r}</option>`).join('')}</select><button class="primary" style="width:100%" onclick="executeSellRequest('${dk}', '${svc}')">Confirmar Venta</button>`; 
 }
 /** Crea y procesa un trade de tipo 'venta'; si es a Externo, se aprueba directamente. */
-function executeSellRequest(dk, svc) { const target = document.getElementById('vender-to-user').value; if (!target) return alert("Selecciona a quién vender."); const trade = { id: Date.now(), type: 'venta', requester: loggedInUser, target: target, d1: dk, s1: svc, timestamp: new Date().toLocaleString('es-ES') }; let conflicts = checkTradeConflicts(trade); if (conflicts.length > 0) { if (!confirm("⚠️ ATENCIÓN: Conflictos:\n\n" + conflicts.join("\n") + "\n\n¿Proponer de todos modos?")) return; } if (target === 'Externo') { trade.status = 'approved'; alert("Venta a externo realizada."); } else { trade.status = 'pending'; alert(`Solicitud enviada a ${target}.`); } if(!state.trades) state.trades = []; state.trades.push(trade); saveState(); document.getElementById('mercado-modal').remove(); checkAutomaticGraduation();
+function executeSellRequest(dk, svc) { const target = document.getElementById('vender-to-user').value; if (!target) return alert("Selecciona a quién vender."); const trade = { id: Date.now(), type: 'venta', requester: loggedInUser, target: target, d1: dk, s1: svc, timestamp: new Date().toLocaleString('es-ES') }; let conflicts = checkTradeConflicts(trade); if (conflicts.length > 0) { if (!confirm("⚠️ ATENCIÓN: Conflictos:\n\n" + conflicts.join("\n") + "\n\n¿Proponer de todos modos?")) return; } if (target === 'Externo') { trade.status = 'approved'; alert("Venta a externo realizada."); } else { trade.status = 'pending'; alert(`Solicitud enviada a ${target}.`); } if(!state.trades) state.trades = []; state.trades.push(trade); _notifyNewTrade(trade); saveState(); document.getElementById('mercado-modal').remove(); checkAutomaticGraduation();
     renderAll(); }
 
 
 
 /** Crea y procesa un trade de tipo 'cambio' directo entre dos días/residentes. */
-function executeSwapRequestDirect(myDk, mySvc, targetDk, targetSvc, targetUser) { const trade = { id: Date.now(), type: 'cambio', requester: loggedInUser, target: targetUser, d1: myDk, s1: mySvc, d2: targetDk, s2: targetSvc, timestamp: new Date().toLocaleString('es-ES') }; let conflicts = checkTradeConflicts(trade); if (conflicts.length > 0) { if (!confirm("⚠️ Conflictos:\n" + conflicts.join("\n") + "\n¿Proponer de todos modos?")) return; } if (targetUser === 'Externo') { trade.status = 'approved'; alert("Cambio con externo realizado."); } else { trade.status = 'pending'; alert(`Solicitud enviada a ${targetUser}.`); } if(!state.trades) state.trades = []; state.trades.push(trade); saveState(); document.getElementById('mercado-modal').remove(); checkAutomaticGraduation();
+function executeSwapRequestDirect(myDk, mySvc, targetDk, targetSvc, targetUser) { const trade = { id: Date.now(), type: 'cambio', requester: loggedInUser, target: targetUser, d1: myDk, s1: mySvc, d2: targetDk, s2: targetSvc, timestamp: new Date().toLocaleString('es-ES') }; let conflicts = checkTradeConflicts(trade); if (conflicts.length > 0) { if (!confirm("⚠️ Conflictos:\n" + conflicts.join("\n") + "\n¿Proponer de todos modos?")) return; } if (targetUser === 'Externo') { trade.status = 'approved'; alert("Cambio con externo realizado."); } else { trade.status = 'pending'; alert(`Solicitud enviada a ${targetUser}.`); } if(!state.trades) state.trades = []; state.trades.push(trade); _notifyNewTrade(trade); saveState(); document.getElementById('mercado-modal').remove(); checkAutomaticGraduation();
     renderAll(); }
 /** Crea y procesa un trade de tipo 'compra'; si es de Externo, se aprueba directamente. */
-function executeBuyRequest(dk, svc, targetUser) { if (targetUser !== 'Externo' && !confirm(`¿Comprar ${svc} a ${targetUser}?`)) return; if (targetUser === 'Externo' && !confirm(`¿Añadir guardia de ${svc} desde Externo?`)) return; const trade = { id: Date.now(), type: 'compra', requester: loggedInUser, target: targetUser, d1: dk, s1: svc, timestamp: new Date().toLocaleString('es-ES') }; let conflicts = checkTradeConflicts(trade); if (conflicts.length > 0) { if (!confirm("⚠️ Conflictos:\n" + conflicts.join("\n") + "\n¿Solicitar de todos modos?")) return; } if (targetUser === 'Externo') { trade.status = 'approved'; alert("Comprada a externo."); } else { trade.status = 'pending'; alert(`Solicitud enviada a ${targetUser}.`); } if(!state.trades) state.trades = []; state.trades.push(trade); saveState(); document.getElementById('mercado-modal').remove(); checkAutomaticGraduation();
+function executeBuyRequest(dk, svc, targetUser) { if (targetUser !== 'Externo' && !confirm(`¿Comprar ${svc} a ${targetUser}?`)) return; if (targetUser === 'Externo' && !confirm(`¿Añadir guardia de ${svc} desde Externo?`)) return; const trade = { id: Date.now(), type: 'compra', requester: loggedInUser, target: targetUser, d1: dk, s1: svc, timestamp: new Date().toLocaleString('es-ES') }; let conflicts = checkTradeConflicts(trade); if (conflicts.length > 0) { if (!confirm("⚠️ Conflictos:\n" + conflicts.join("\n") + "\n¿Solicitar de todos modos?")) return; } if (targetUser === 'Externo') { trade.status = 'approved'; alert("Comprada a externo."); } else { trade.status = 'pending'; alert(`Solicitud enviada a ${targetUser}.`); } if(!state.trades) state.trades = []; state.trades.push(trade); _notifyNewTrade(trade); saveState(); document.getElementById('mercado-modal').remove(); checkAutomaticGraduation();
     renderAll(); }
 // ============================================================
 // MÓDULO: ADMIN_AJUSTES
@@ -2991,24 +3374,8 @@ function executeExport() {
     const shiftsToUse = isMercado ? getComputedShifts() : state.shifts;
     const suffix = isMercado ? "Mercadillo" : "Original";
     
-    // Averiguar qué residentes pertenecen al plan usando state.planRotations como fuente de verdad
-    const _residentesDePlan = new Set();
-    if (state.planRotations?.[planName]) {
-        (state.planRotations[planName].baseGroups || []).flat().forEach(n => _residentesDePlan.add(n));
-    }
-    const residents = getAllResidents().filter(u => {
-        if (_residentesDePlan.has(u)) return true;
-        // Fallback: si no aparece en ningún planRotations, asignar al primer plan
-        const enAlgunPlan = state.planRotations && Object.values(state.planRotations).some(pr => (pr.baseGroups || []).flat().includes(u));
-        if (!enAlgunPlan) return planName === promoConfig.planes[0].nombre;
-        return false;
-    });
-
-    if (residents.length === 0) {
-        alert("No se han encontrado residentes asignados a este Plan de Guardias.");
-        return;
-    }
-
+    // Los residentes del plan se calculan mes a mes (getResidentesDePlan): si alguien
+    // cambia de plan a mitad del período exportado, cada hoja refleja su plan real.
     const wb = XLSX.utils.book_new();
     const STYLE_FESTIVO = { fill: { fgColor: { rgb: "FEE2E2" } }, font: { color: { rgb: "EF4444" }, bold: true } };
 
@@ -3035,19 +3402,43 @@ function executeExport() {
         const days = getDaysInMonth(y, m);
         const sheetName = `${MONTHS[m].substring(0,3)} ${y}`;
 
-        // Construir la tabla de este mes
-        const dataGlobal = []; 
-        const hGlobal = ["Residente"];
-        
+        const residents = getResidentesDePlan(planName, y, m);
+
         // Determinar qué servicios mostrar
         let targetServices = svcName === 'ALL' ? plan.servicios.map(s => s.nombre) : [svcName];
-        
+
+        // Foráneos: residentes de otros planes que aparecen en el calendario de este plan
+        // (mercadillo inter-plan, forzosas). Su guardia se atribuye a este plan solo si su
+        // propio plan NO tiene un servicio con ese nombre; si lo tiene, la guardia pertenece
+        // al calendario de su propio plan y no se exporta aquí.
+        const foraneos = [];
+        const monthPrefix = `${y}_${String(m + 1).padStart(2, '0')}_`;
+        for (const dk in (shiftsToUse || {})) {
+            if (!dk.startsWith(monthPrefix)) continue;
+            for (const u in shiftsToUse[dk]) {
+                if (u === 'Externo' || u.startsWith('VRE')) continue;
+                if (residents.includes(u) || foraneos.includes(u)) continue;
+                const svcNombre = shiftsToUse[dk][u];
+                if (!targetServices.includes(svcNombre)) continue;
+                const propioPlan = (promoConfig.planes || []).find(p =>
+                    p.nombre !== planName && residentePerteneceAPlan(u, p.nombre, y, m));
+                const loReclamaSuPlan = propioPlan && propioPlan.servicios.some(s => s.nombre === svcNombre);
+                if (!loReclamaSuPlan) foraneos.push(u);
+            }
+        }
+
+        const rowUsers = [...residents, ...foraneos];
+
+        // Construir la tabla de este mes
+        const dataGlobal = [];
+        const hGlobal = ["Residente"];
+
         // Cabecera de días
         for (let d = 1; d <= days; d++) hGlobal.push(`${d}`);
         hGlobal.push("Total");
         dataGlobal.push(hGlobal);
 
-        residents.forEach(user => { 
+        rowUsers.forEach(user => {
             const row = [user]; let total = 0; 
             for(let d=1; d<=days; d++) { 
                 const ds = shiftsToUse[formatDateKey(y, m, d)] || {}; 
@@ -3064,13 +3455,16 @@ function executeExport() {
                     row.push(""); 
                 }
             } 
-            row.push(total); dataGlobal.push(row); 
+            // Solo exportamos a quien tuvo guardias del plan este mes (sin filas a cero)
+            if (total > 0) { row.push(total); dataGlobal.push(row); }
         });
 
-        const ws = XLSX.utils.aoa_to_sheet(dataGlobal); 
-        for(let d=1; d<=days; d++) { 
-            if (state.festivos && state.festivos[formatDateKey(y, m, d)]) { 
-                for (let r = 0; r <= residents.length; r++) { 
+        if (dataGlobal.length <= 1) return; // Nadie tuvo guardias de este plan este mes → sin hoja
+
+        const ws = XLSX.utils.aoa_to_sheet(dataGlobal);
+        for(let d=1; d<=days; d++) {
+            if (state.festivos && state.festivos[formatDateKey(y, m, d)]) {
+                for (let r = 0; r < dataGlobal.length; r++) {
                     const cell = ws[XLSX.utils.encode_cell({r: r, c: d})]; 
                     if (cell) cell.s = STYLE_FESTIVO; 
                 } 
@@ -3080,6 +3474,11 @@ function executeExport() {
         // Solo añadimos la hoja si hay residentes (ya filtrados arriba)
         XLSX.utils.book_append_sheet(wb, ws, sheetName);
     });
+
+    if (wb.SheetNames.length === 0) {
+        alert("No se han encontrado residentes asignados a este Plan de Guardias en el período seleccionado.");
+        return;
+    }
 
     let filename = `Guardias_${planName}_${svcName === 'ALL' ? 'Todos' : svcName}_${suffix}.xlsx`;
     XLSX.writeFile(wb, filename);
@@ -3319,7 +3718,7 @@ function renderAdminHoras() {
 async function adminResetSkips(y, m) { const monthKey = getRotationKey(y, m); if (state.skippedTurns[monthKey]) { delete state.skippedTurns[monthKey]; await saveState(); checkAutomaticGraduation();
     renderAll(); } }
 /** Borra todas las guardias, skips, subastas y excepciones del mes. Acción destructiva con confirmación. */
-async function adminResetMonth(y, m) { if (!confirm(`¡PELIGRO! ¿Borrar todas las guardias de este mes?`)) return; const days = getDaysInMonth(y, m); for(let d = 1; d <= days; d++) { const dk = formatDateKey(y, m, d); delete state.shifts[dk]; } const monthKey = getRotationKey(y, m); delete state.skippedTurns[monthKey]; if (state.pendingExceptions && state.pendingExceptions[monthKey]) delete state.pendingExceptions[monthKey]; if (state.configMes && state.configMes[monthKey]) delete state.configMes[monthKey]; if (state.subastasCerradasForzosas) { Object.keys(state.subastasCerradasForzosas).forEach(k => { if (k.startsWith(`${y}_${m}_`)) delete state.subastasCerradasForzosas[k]; }); } if (state.subastaNominados) { Object.keys(state.subastaNominados).forEach(k => { if (k.startsWith(`${y}_${m}_`)) delete state.subastaNominados[k]; }); } await saveState(); checkAutomaticGraduation();
+async function adminResetMonth(y, m) { if (!isAdmin) return alert('⚠️ El reset del mes borra las guardias de TODOS los planes; solo el admin puede ejecutarlo.'); if (!confirm(`¡PELIGRO! ¿Borrar todas las guardias de este mes?`)) return; const days = getDaysInMonth(y, m); for(let d = 1; d <= days; d++) { const dk = formatDateKey(y, m, d); delete state.shifts[dk]; } const monthKey = getRotationKey(y, m); delete state.skippedTurns[monthKey]; if (state.pendingExceptions && state.pendingExceptions[monthKey]) delete state.pendingExceptions[monthKey]; if (state.configMes && state.configMes[monthKey]) delete state.configMes[monthKey]; if (state.subastasCerradasForzosas) { Object.keys(state.subastasCerradasForzosas).forEach(k => { if (k.startsWith(`${y}_${m}_`)) delete state.subastasCerradasForzosas[k]; }); } if (state.subastaNominados) { Object.keys(state.subastaNominados).forEach(k => { if (k.startsWith(`${y}_${m}_`)) delete state.subastaNominados[k]; }); } if (state.subastaSnapshot) { Object.keys(state.subastaSnapshot).forEach(k => { if (k.startsWith(`${y}_${m}_`)) delete state.subastaSnapshot[k]; }); } if (state.fechaFinRonda) { Object.keys(state.fechaFinRonda).forEach(k => { if (k.startsWith(`${y}_${m}_`)) delete state.fechaFinRonda[k]; }); } await saveState(); checkAutomaticGraduation();
     renderAll(); }
 /**
  * Expulsa a todos los residentes no-admin de la promoción y limpia el estado del calendario completo.
@@ -3351,6 +3750,8 @@ async function adminVaciarGeneracion() {
     state.trades = [];
     state.subastasCerradasForzosas = {};
     state.subastaNominados = {};
+    state.subastaSnapshot = {};
+    state.fechaFinRonda = {};
 
     // 3. Reseteamos la rotación para que solo quede el Admin actual
     const _vacPlanName = promoConfig.planes?.[0]?.nombre || "Plan Base";
@@ -3441,7 +3842,7 @@ async function adminForceBorrarTrade(id) {
  * Aprueba o rechaza una solicitud de trade (o un undo_pending).
  * Verifica que las guardias involucradas aún existen antes de aprobar.
  */
-async function processTrade(id, isApprove) { let t = state.trades.find(x => x.id === id); if (!t) return; if (t.status === 'pending') { if(isApprove) { const computed = getComputedShifts(); if (t.type === 'cambio' && (!computed[t.d1]?.[t.requester] || !computed[t.d2]?.[t.target])) { alert("Error: Las guardias ya no existen."); t.status = 'rejected'; } else if (t.type === 'venta' && !computed[t.d1]?.[t.requester]) { alert("Error: La guardia ya no existe."); t.status = 'rejected'; } else if (t.type === 'compra' && t.target !== 'Externo' && !computed[t.d1]?.[t.target]) { alert("Error: La guardia ya no existe."); t.status = 'rejected'; } else { let conflicts = checkTradeConflicts(t); if (conflicts.length > 0) { if (!confirm("Generará conflictos:\n" + conflicts.join("\n") + "\n¿Continuar?")) return; } t.status = 'approved'; } } else t.status = 'rejected'; } else if (t.status === 'undo_pending') t.status = isApprove ? 'undone' : 'approved'; await saveState(); checkAutomaticGraduation();
+async function processTrade(id, isApprove) { let t = state.trades.find(x => x.id === id); if (!t) return; if (t.status === 'pending') { if(isApprove) { const computed = getComputedShifts(); if (t.type === 'cambio' && (!computed[t.d1]?.[t.requester] || !computed[t.d2]?.[t.target])) { alert("Error: Las guardias ya no existen."); t.status = 'rejected'; } else if (t.type === 'venta' && !computed[t.d1]?.[t.requester]) { alert("Error: La guardia ya no existe."); t.status = 'rejected'; } else if (t.type === 'compra' && t.target !== 'Externo' && !computed[t.d1]?.[t.target]) { alert("Error: La guardia ya no existe."); t.status = 'rejected'; } else { let conflicts = checkTradeConflicts(t); if (conflicts.length > 0) { if (!confirm("Generará conflictos:\n" + conflicts.join("\n") + "\n¿Continuar?")) return; } t.status = 'approved'; } } else t.status = 'rejected'; } else if (t.status === 'undo_pending') t.status = isApprove ? 'undone' : 'approved'; await saveState(); _notifyTradeResolved(id); checkAutomaticGraduation();
     renderAll(); }
 /** Solicita deshacer un trade aprobado. Si es con Externo, se deshace directamente; si no, queda pendiente de confirmación. */
 async function requestTradeUndo(id) { let t = state.trades.find(x => x.id === id); if (!t) return; if (t.target === 'Externo') { if(!confirm("¿Deshacer operación con externo?")) return; t.status = 'undone'; } else { if(!confirm(`¿Enviar solicitud de deshacer?`)) return; t.status = 'undo_pending'; t.undoRequester = loggedInUser; } await saveState(); checkAutomaticGraduation();
@@ -3678,10 +4079,22 @@ async function adminAprobarUsuario(userId, userName) {
     setStatus('Aprobando...');
     const { error } = await supabaseClient.from('perfiles').update({ estado: 'aprobado' }).eq('id', userId);
     if(error) return alert("Error: " + error.message);
-    
-    // Añadir al grupo con menor número de miembros (W4)
+
+    // 🧭 B2: el plan de destino es el del USUARIO APROBADO (calculado por sus fechas de
+    // contrato), NUNCA el del aprobador: un delegado R2 aprobando a una R1 la metía en
+    // los baseGroups del plan R2 y aparecía "al final de la lista de R2".
     const dk = formatDateKey(curDate.getFullYear(), curDate.getMonth(), 1);
-    const planName = getCurrentRotPlan(dk);
+    const { data: perfilNuevo } = await supabaseClient.from('perfiles').select('*').eq('id', userId).single();
+    if (perfilNuevo && !globalProfiles.some(p => p.id === perfilNuevo.id)) globalProfiles.push(perfilNuevo);
+    let planAprobado = perfilNuevo ? getPlanForUserOnDate(perfilNuevo, dk) : null;
+    if (!planAprobado && perfilNuevo?.fecha_inicio_residencia) {
+        // Aún no ha empezado en el mes visible: usamos el plan de su mes de inicio
+        const [iy, im] = perfilNuevo.fecha_inicio_residencia.split('-').map(Number);
+        planAprobado = getPlanForUserOnDate(perfilNuevo, formatDateKey(iy, im - 1, 1));
+    }
+    const planName = planAprobado ? planAprobado.nombre : getCurrentRotPlan(dk);
+
+    // Añadir al grupo con menor número de miembros (W4)
     if (!state.planRotations) state.planRotations = {};
     if (!state.planRotations[planName]) state.planRotations[planName] = { baseGroups: [], baseYear: curDate.getFullYear(), baseMonth: curDate.getMonth(), customRotations: {}, residentesFijos: [] };
     const pr = state.planRotations[planName];
@@ -3701,9 +4114,9 @@ async function adminAprobarUsuario(userId, userName) {
         }
     }
     
-    invalidateConfigMes();
-    await saveState(); 
-    await renderAccountsList(); 
+    invalidateConfigMesDesde(); // Solo desde el mes actual: los meses cerrados no se reabren
+    await saveState();
+    await renderAccountsList();
     setStatus('Conectado ✅');
 }
 
@@ -3752,7 +4165,7 @@ function renderRotationView() {
     if (isDelegado && promoConfig.planes) {
         planSelectorHtml = `<div style="margin-bottom:15px; padding:10px; background:#f8fafc; border-radius:8px; display:flex; align-items:center; gap:10px;">
             <label style="font-weight:bold; font-size:0.9rem;">Viendo Rotacin de:</label>
-            <select id="rot-plan-select" style="padding:5px; border-radius:5px; border:1px solid #cbd5e1;" onchange="selectedRotPlan = this.value; renderRotationView();">
+            <select id="rot-plan-select" style="padding:5px; border-radius:5px; border:1px solid #cbd5e1;" onchange="selectedRotPlan = this.value; editingGroups = null; renderAll();">
                 <option value="AUTO" ${!selectedRotPlan || selectedRotPlan === 'AUTO' ? 'selected' : ''}>Mi Plan Actual (Automtico)</option>
                 ${promoConfig.planes.map(p => `<option value="${p.nombre}" ${selectedRotPlan === p.nombre ? 'selected' : ''}>${p.nombre}</option>`).join('')}
             </select>
@@ -3776,11 +4189,14 @@ function renderRotationView() {
         listDiv.appendChild(div); 
     }); 
     containerTop.appendChild(listDiv);
-    if (isAdmin) { 
-        document.getElementById('admin-rot-tools').style.display = 'block'; 
-        if (!editingGroups) editingGroups = JSON.parse(JSON.stringify(groups)); 
-        renderEditor(); 
-    } else document.getElementById('admin-rot-tools').style.display = 'none'; 
+    // 🧭 B2: el editor se habilita para el admin (todos los planes) y para el delegado
+    // SOLO cuando el plan visualizado es el suyo propio. En otros planes: solo lectura.
+    const _planVista = getCurrentRotPlan(dk);
+    if (puedeGestionarPlan(_planVista, y, m)) {
+        document.getElementById('admin-rot-tools').style.display = 'block';
+        if (!editingGroups) editingGroups = JSON.parse(JSON.stringify(groups));
+        renderEditor();
+    } else document.getElementById('admin-rot-tools').style.display = 'none';
 }
 
 /**
@@ -3791,6 +4207,7 @@ function renderRotationView() {
 async function toggleResidenteFijo(nombre) {
     const dk = formatDateKey(curDate.getFullYear(), curDate.getMonth(), 1);
     const planName = getCurrentRotPlan(dk);
+    if (!puedeGestionarPlan(planName, curDate.getFullYear(), curDate.getMonth())) return alert('⚠️ Solo puedes editar la rotación de tu propio plan de guardias.');
     if (!state.planRotations || !state.planRotations[planName]) return;
     const pr = state.planRotations[planName];
     if (!pr.residentesFijos) pr.residentesFijos = [];
@@ -3815,7 +4232,7 @@ async function toggleResidenteFijo(nombre) {
     
     editingGroups = nuevoBlock;
     pr.baseGroups = JSON.parse(JSON.stringify(editingGroups));
-    invalidateConfigMes();
+    invalidateConfigMesDesde(); // Solo desde el mes actual: los meses cerrados no se reabren
     await saveState();
     renderEditor();
 }
@@ -3826,6 +4243,8 @@ async function toggleResidenteFijo(nombre) {
  * @param {string} nombre
  */
 async function toggleResidenteExcluido(nombre) {
+    const _dkTE = formatDateKey(curDate.getFullYear(), curDate.getMonth(), 1);
+    if (!puedeGestionarPlan(getCurrentRotPlan(_dkTE), curDate.getFullYear(), curDate.getMonth())) return alert('⚠️ Solo puedes editar la rotación de tu propio plan de guardias.');
     if (!state.excluidosSubastas) state.excluidosSubastas = [];
     if (state.excluidosSubastas.includes(nombre)) {
         state.excluidosSubastas = state.excluidosSubastas.filter(n => n !== nombre);
@@ -3918,7 +4337,7 @@ function renderEditor() {
         <select id="sel-add-res" style="flex:1; padding:8px; border-radius:6px; border:1px solid #cbd5e1;">
             <option value="">-- Añadir Residente a la Rotación --</option>
             <option value="VIRTUAL">+ Nuevo Virtual (Ej: Aura)</option>
-            ${globalProfiles.filter(p => !editingGroups.flat().includes(p.nombre_mostrar) && p.promocion_id === currentUserProfile.promocion_id).map(p => `<option value="${p.nombre_mostrar}">${p.nombre_mostrar} (Registrado)</option>`).join('')}
+            ${globalProfiles.filter(p => !editingGroups.flat().includes(p.nombre_mostrar) && p.promocion_id === currentUserProfile.promocion_id && residentePerteneceAPlan(p.nombre_mostrar, _edPlanName, curDate.getFullYear(), curDate.getMonth())).map(p => `<option value="${p.nombre_mostrar}">${p.nombre_mostrar} (Registrado)</option>`).join('')}
         </select>
         <button class="primary" style="background:var(--dark);" onclick="editorAddSelectedRes()">Añadir</button>
     </div>
@@ -4064,16 +4483,17 @@ function editorRemoveMemberLinear(gIdx, rIdx) {
  * Reinicia customRotations, baseMonth y baseYear al mes actual.
  */
 async function adminAutoShuffleGroups() {
-    if (!confirm("⚠️ Se va a barajar a los residentes. Los marcados como 'Fijos' se mantendrán al inicio de la rueda. ¿Continuar?")) return;
-    
     const dk = formatDateKey(curDate.getFullYear(), curDate.getMonth(), 1);
     const planName = getCurrentRotPlan(dk);
+    if (!puedeGestionarPlan(planName, curDate.getFullYear(), curDate.getMonth())) return alert('⚠️ Solo puedes editar la rotación de tu propio plan de guardias.');
+    if (!confirm("⚠️ Se va a barajar a los residentes. Los marcados como 'Fijos' se mantendrán al inicio de la rueda. ¿Continuar?")) return;
     if (!state.planRotations) state.planRotations = {};
     if (!state.planRotations[planName]) state.planRotations[planName] = { baseGroups: [], baseYear: curDate.getFullYear(), baseMonth: curDate.getMonth(), customRotations: {}, residentesFijos: [] };
     const pr = state.planRotations[planName];
     if (!pr.residentesFijos) pr.residentesFijos = [];
     
-    let linear = getAllResidents();
+    // Solo se baraja a los residentes del plan visualizado (antes: todos los de la especialidad)
+    let linear = getResidentesDePlan(planName, curDate.getFullYear(), curDate.getMonth());
     const fijosPresentes = linear.filter(n => pr.residentesFijos.includes(n));
     let restOfResidents = linear.filter(n => !pr.residentesFijos.includes(n));
     
@@ -4103,6 +4523,7 @@ function editorRemoveGroup(gi) { editingGroups.splice(gi, 1); renderEditor(); }
 async function saveCustomMonth() {
     const _dk = formatDateKey(curDate.getFullYear(), curDate.getMonth(), 1);
     const _planName = getCurrentRotPlan(_dk);
+    if (!puedeGestionarPlan(_planName, curDate.getFullYear(), curDate.getMonth())) return alert('⚠️ Solo puedes editar la rotación de tu propio plan de guardias.');
     const _pr = state.planRotations?.[_planName];
     if (_pr) _pr.customRotations[getRotationKey(curDate.getFullYear(), curDate.getMonth())] = JSON.parse(JSON.stringify(editingGroups));
     await saveState(); 
@@ -4117,6 +4538,7 @@ async function saveCustomMonth() {
 async function saveAsNewBase() {
     const _dk = formatDateKey(curDate.getFullYear(), curDate.getMonth(), 1);
     const _planName = getCurrentRotPlan(_dk);
+    if (!puedeGestionarPlan(_planName, curDate.getFullYear(), curDate.getMonth())) return alert('⚠️ Solo puedes editar la rotación de tu propio plan de guardias.');
     if (!state.planRotations) state.planRotations = {};
     if (!state.planRotations[_planName]) state.planRotations[_planName] = { baseGroups: [], baseYear: curDate.getFullYear(), baseMonth: curDate.getMonth(), customRotations: {}, residentesFijos: [] };
     const _pr = state.planRotations[_planName];
@@ -4366,12 +4788,20 @@ function renderAlertaCargaMensual() {
  * @param {string} svcNombre
  */
 async function forzarCierreSubasta(y, m, svcNombre) {
+    const _pvCierre = getCurrentRotPlan(formatDateKey(y, m, 1));
+    if (!puedeGestionarPlan(_pvCierre, y, m)) return alert('⚠️ Solo puedes cerrar subastas de tu propio plan de guardias.');
     if (!confirm(`¿Seguro que quieres cerrar la subasta de ${svcNombre} inmediatamente? Se requerirá la inyección forzosa para cubrir los huecos restantes.`)) return;
     if (!state.subastasCerradasForzosas) state.subastasCerradasForzosas = {};
     // La clave incluye el plan para no mezclar cierres entre planes distintos
     const analisisCierre = getAnalisisFestivos(y, m);
     const planKey = analisisCierre?.planNombre || '';
     state.subastasCerradasForzosas[`${y}_${m}_${planKey}_${svcNombre}`] = true;
+    // Notify all plan residents that the voluntary window is now open
+    const _mesLabelVC = MONTHS[m] + ' ' + y;
+    (analisisCierre?.planResidentes || []).forEach(nombre => {
+        const _prof = globalProfiles.find(p => p.nombre_mostrar === nombre);
+        if (_prof) insertNotificacion(_prof.id, 'ventana_voluntaria', { year: y, month: m, mes: _mesLabelVC, servicio: svcNombre });
+    });
     await saveState();
     renderAll();
 }
@@ -4390,7 +4820,7 @@ function proyectarAsignacionForzosa(y, m, analisis) {
     if (!svcRef) return { proyecciones: [], salvados: [] };
 
     const totalDias = getDaysInMonth(y, m);
-    const referenceDk = formatDateKey(y, m, 15);
+    const referenceDk = formatDateKey(y, m, 1);
     let huecosLibres = [];
 
     for (let d = 1; d <= totalDias; d++) {
@@ -4417,7 +4847,8 @@ function proyectarAsignacionForzosa(y, m, analisis) {
 
     const planResidentes = analisis.planResidentes?.length > 0
         ? analisis.planResidentes
-        : (state.configMes?.[getRotationKey(y, m)]?.ordenSeleccion || []);
+        : (state.configMes?.[getRotationKey(y, m)]?.ordenSeleccion || [])
+            .filter(r => !analisis.planNombre || residentePerteneceAPlan(r, analisis.planNombre, y, m));
     const candidatos = [
         ...analisis.nominados,
         ...planResidentes.filter(r => !analisis.nominados.includes(r))
@@ -4464,6 +4895,8 @@ async /**
  * @param {string} targetSvcNombre - nombre del servicio a cubrir
  */
 async function ejecutarAsignacionForzosa(y, m, targetSvcNombre) {
+    const _pvForz = getCurrentRotPlan(formatDateKey(y, m, 1));
+    if (!puedeGestionarPlan(_pvForz, y, m)) return alert('⚠️ Solo puedes forzar asignaciones de tu propio plan de guardias.');
     if (!confirm(`¿Seguro que quieres inyectar automáticamente las guardias pendientes de ${targetSvcNombre} a los nominados?`)) return;
     
     const analisis = getAnalisisFestivos(y, m);
@@ -4489,7 +4922,7 @@ async function ejecutarAsignacionForzosa(y, m, targetSvcNombre) {
                     if (state.shifts[dk][u] === svc.nombre && !u.startsWith('VRE')) {
                         // Solo contar shifts del mismo plan (consistente con getAnalisisFestivos)
                         const uProfile = globalProfiles.find(p => p.nombre_mostrar === u);
-                        const referenceDkE = formatDateKey(y, m, 15);
+                        const referenceDkE = formatDateKey(y, m, 1);
                         if (!uProfile || getPlanForUserOnDate(uProfile, referenceDkE)?.nombre === planRef.nombre) {
                             assignedCount++;
                         }
@@ -4510,7 +4943,8 @@ async function ejecutarAsignacionForzosa(y, m, targetSvcNombre) {
     // Nominados primero; fallback limitado a residentes del mismo plan (no pool global)
     const planResidentes = analisis.planResidentes?.length > 0
         ? analisis.planResidentes
-        : (state.configMes?.[getRotationKey(y, m)]?.ordenSeleccion || []);
+        : (state.configMes?.[getRotationKey(y, m)]?.ordenSeleccion || [])
+            .filter(r => !analisis.planNombre || residentePerteneceAPlan(r, analisis.planNombre, y, m));
     const candidatos = [
         ...analisis.nominados,
         ...planResidentes.filter(r => !analisis.nominados.includes(r))
@@ -4539,6 +4973,8 @@ async function ejecutarAsignacionForzosa(y, m, targetSvcNombre) {
                 state.shifts[hueco.dk][residente] = hueco.svc;
                 asignacionesLog.push(`${residente} → ${hueco.svc} (${formatDK(hueco.dk)})`);
                 huecosAsignados++;
+                // Notify the assigned resident
+                { const _fp = globalProfiles.find(p => p.nombre_mostrar === residente); if (_fp) insertNotificacion(_fp.id, 'guardia_forzada', { year: y, month: m, fecha: formatDK(hueco.dk), servicio: hueco.svc }); }
                 if (nominadosSet.has(residente)) nominadosAsignados.add(residente);
                 candidatos.push(candidatos.splice(c, 1)[0]); // rotación fairness
                 asignado = true;
@@ -4566,6 +5002,10 @@ async function ejecutarAsignacionForzosa(y, m, targetSvcNombre) {
     }
     if (huecosImpossibles.length > 0) {
         mensajeFinal += `\n\n⚠️ ${huecosImpossibles.length} hueco(s) imposibles de cubrir sin violar descansos:\n${huecosImpossibles.join('\n')}`;
+        // Notify admins and delegados about uncoverable slots
+        globalProfiles.filter(p => p.estado === 'aprobado' && (p.rol === 'admin' || p.rol === 'delegado')).forEach(ap => {
+            insertNotificacion(ap.id, 'hueco_sin_candidato', { year: y, month: m, servicio: targetSvcNombre, count: huecosImpossibles.length });
+        });
     }
 
     alert(mensajeFinal);
@@ -4664,9 +5104,72 @@ function _getAnalisisFestivosImpl(y, m) {
     const monthPrefix = `${y}_${String(m + 1).padStart(2, '0')}_`;
     const monthHasAnyShifts = Object.keys(state.shifts || {}).some(dk => dk.startsWith(monthPrefix));
 
-    const referenceDk = formatDateKey(y, m, 15);
-    const miPlan = getPlanForUserOnDate(currentUserProfile, referenceDk) || promoConfig.planes?.[0];
+    const referenceDk = formatDateKey(y, m, 1);
+    // 🧭 B2: el análisis sigue el plan visualizado (simulación > selector del delegado >
+    // plan propio calculado), igual que el resto de vistas.
+    const planNombreVista = getCurrentRotPlan(referenceDk);
+    const miPlan = (promoConfig.planes || []).find(p => p.nombre === planNombreVista)
+        || getPlanForUserOnDate(currentUserProfile, referenceDk)
+        || promoConfig.planes?.[0];
     if (!miPlan) return { estado: 'libre', exceso: 0, nominados: [], svcNombre: null };
+
+    // keyMes incluye el plan para que cada plan tenga su propia marca y snapshot de subasta.
+    const keyMes = `${y}_${m}_${miPlan.nombre}`;
+
+    // ── SNAPSHOT ──────────────────────────────────────────────────────────────────────────────
+    // Si ya existe un snapshot para este mes+plan, devolver desde él sin re-evaluar desde cero.
+    // Escrito la primera vez que rondaTerminada=true. Borrado por adminResetMonth y resetSubastaEstado.
+    if (!state.subastaSnapshot) state.subastaSnapshot = {};
+    const _snap = state.subastaSnapshot[keyMes];
+    if (_snap !== undefined) {
+        // Snapshot "libre": todos los huecos estaban cubiertos cuando terminó la ronda.
+        if (!_snap.svcNombre) return { estado: 'libre', exceso: 0, nominados: [], svcNombre: null };
+        // Verificación ligera: si todos los huecos se cubrieron voluntariamente, transicionar a libre.
+        const _snapPlanRef = (promoConfig.planes || []).find(p => p.nombre === _snap.planNombre) || miPlan;
+        const _snapSvcRef = _snapPlanRef?.servicios?.find(s => s.nombre === _snap.svcNombre);
+        if (_snapSvcRef) {
+            let _currentExceso = 0;
+            const _totalDias = getDaysInMonth(y, m);
+            for (let d = 1; d <= _totalDias; d++) {
+                const dk = formatDateKey(y, m, d);
+                const tag = getDayTag(y, m, d);
+                if ((_snapSvcRef.subastaTrigger || []).includes(tag)) {
+                    if (_snapSvcRef.requiereHabilitacion && !isServiceEnabledOnDate(_snapSvcRef.nombre, dk, _snapPlanRef.nombre)) continue;
+                    const needed = getPlazasForDay(_snapSvcRef, dk);
+                    let assigned = 0;
+                    if (state.shifts[dk]) {
+                        for (const u in state.shifts[dk]) {
+                            if (state.shifts[dk][u] === _snapSvcRef.nombre && !u.startsWith('VRE')) {
+                                const uProfile = globalProfiles.find(p => p.nombre_mostrar === u);
+                                if (!uProfile || getPlanForUserOnDate(uProfile, referenceDk)?.nombre === _snapPlanRef.nombre) assigned++;
+                            }
+                        }
+                    }
+                    _currentExceso += Math.max(0, needed - assigned);
+                }
+            }
+            if (_currentExceso === 0) return { estado: 'libre', exceso: 0, nominados: [], svcNombre: null };
+        }
+        // Estado dinámico: la transición abierta→cerrada sigue dependiendo del tiempo y forzados.
+        const _inicioRonda = state.fechaFinRonda?.[keyMes] ?? 0;
+        const _horasTrans = (Date.now() - _inicioRonda) / (1000 * 60 * 60);
+        const _isForzada = state.subastasCerradasForzosas?.[`${y}_${m}_${miPlan.nombre}_${_snap.svcNombre}`];
+        const _ventana = promoConfig.ventana_voluntaria_horas || 48;
+        const _estadoSnap = (_horasTrans >= _ventana || _isForzada) ? 'subasta_cerrada' : 'subasta_abierta';
+        return {
+            estado: _estadoSnap,
+            exceso: _snap.exceso,
+            nominados: _snap.nominados,
+            planResidentes: _snap.planResidentes,
+            svcNombre: _snap.svcNombre,
+            planNombre: _snap.planNombre,
+            servicioCriterio: _snap.servicioCriterio,
+            horasRestantes: Math.floor(Math.max(0, _ventana - _horasTrans)),
+            criterio: _snap.criterio,
+            historico: _snap.historico
+        };
+    }
+    // ── FIN SNAPSHOT ──────────────────────────────────────────────────────────────────────────
 
     // Ronda terminada solo cuando todos los residentes del plan del usuario han completado el turno.
     // Esto vincula la subasta al plan específico que terminó de elegir, no a la rotación global.
@@ -4674,11 +5177,10 @@ function _getAnalisisFestivosImpl(y, m) {
     if (state.configMes && state.configMes[mk]) {
         const ordenSeleccion = state.configMes[mk].ordenSeleccion || [];
         const activosMes = getResidentesActivosEnMes(y, m);
-        const residentsOnMyPlan = ordenSeleccion.filter(r => {
-            const rProfile = globalProfiles.find(p => p.nombre_mostrar === r);
-            if (!rProfile) return false;
-            return getPlanForUserOnDate(rProfile, referenceDk)?.nombre === miPlan.nombre;
-        });
+        const residentsOnMyPlan = ordenSeleccion.filter(r =>
+            globalProfiles.some(p => p.nombre_mostrar === r) &&
+            residentePerteneceAPlan(r, miPlan.nombre, y, m)
+        );
         if (residentsOnMyPlan.length > 0) {
             const allDone = residentsOnMyPlan.every(r => {
                 if (!activosMes.some(a => a.toLowerCase() === r.toLowerCase())) return true;
@@ -4697,8 +5199,6 @@ function _getAnalisisFestivosImpl(y, m) {
         return { estado: 'libre', exceso: 0, nominados: [], svcNombre: null };
     }
 
-    // keyMes incluye el plan para que cada plan tenga su propia marca de inicio de ventana voluntaria
-    const keyMes = `${y}_${m}_${miPlan.nombre}`;
     if (!state.fechaFinRonda) state.fechaFinRonda = {};
     if (!state.fechaFinRonda[keyMes]) {
         state.fechaFinRonda[keyMes] = Date.now();
@@ -4708,30 +5208,21 @@ function _getAnalisisFestivosImpl(y, m) {
     const totalDias = getDaysInMonth(y, m);
 
     // Candidatos y nominados son únicamente los residentes del plan del usuario
-    const residentes = getAllResidents().filter(residente => {
+    // (getResidentesActivosEnMes ya descarta graduados y bajas largas aprobadas del mes)
+    const residentes = getResidentesActivosEnMes(y, m).filter(residente => {
         if (state.excluidosSubastas && state.excluidosSubastas.includes(residente)) return false;
-        const tieneBaja = (state.bajasLargas||[]).some(baja => {
-            if (baja.user !== residente || baja.estado !== 'aprobada') return false;
-            const bInicio = new Date(baja.fechaInicio);
-            const bFin = new Date(baja.fechaFin);
-            return (bInicio <= new Date(y, m, totalDias) && bFin >= new Date(y, m, 1));
-        });
-        if (tieneBaja) return false;
-        const rProfile = globalProfiles.find(p => p.nombre_mostrar === residente);
-        if (!rProfile) {
-            // Residente virtual: incluir si pertenece a este plan por baseGroups
-            const vPlan = state.planRotations?.[miPlan.nombre];
-            return (vPlan?.baseGroups || []).flat().includes(residente);
-        }
-        return getPlanForUserOnDate(rProfile, referenceDk)?.nombre === miPlan.nombre;
+        return residentePerteneceAPlan(residente, miPlan.nombre, y, m);
     });
     
     if (residentes.length === 0) return { estado: 'libre', exceso: 0, nominados: [], svcNombre: null };
 
     const serviciosOrdenados = [...miPlan.servicios].sort((a, b) => (a.ordenSubasta || 999) - (b.ordenSubasta || 999));
-    // FIX: usar getComputedShifts() para que las compras/ventas del mercadillo
-    // también cuenten como huecos cubiertos y reduzcan correctamente el exceso.
-    const computedShiftsRef = getComputedShifts();
+    // La subasta opera sobre el calendario de asignación original (state.shifts), nunca sobre
+    // los trades del mercadillo (getComputedShifts). Usar computedShifts aquí generaba una
+    // inconsistencia: ventas a Externo o inter-plan eliminan la entrada del vendedor en
+    // computedShifts pero no en state.shifts, haciendo que la subasta detectara "exceso"
+    // mientras renderAlertaCargaMensual y ejecutarAsignacionForzosa (que usan state.shifts)
+    // mostraban 0 huecos → mes atascado en estado de subasta con 0 guardias a repartir.
     for (let i = 0; i < serviciosOrdenados.length; i++) {
         const svc = serviciosOrdenados[i];
 
@@ -4750,9 +5241,9 @@ function _getAnalisisFestivosImpl(y, m) {
                 const needed = getPlazasForDay(svc, dk);
                 huecosObligatoriosSvc += needed;
 
-                if (computedShiftsRef[dk]) {
-                    for (let u in computedShiftsRef[dk]) {
-                        if (computedShiftsRef[dk][u] === svc.nombre && !u.startsWith('VRE')) {
+                if (state.shifts[dk]) {
+                    for (let u in state.shifts[dk]) {
+                        if (state.shifts[dk][u] === svc.nombre && !u.startsWith('VRE')) {
                             // Solo contar shifts de residentes del mismo plan
                             const uProfile = globalProfiles.find(p => p.nombre_mostrar === u);
                             if (!uProfile || getPlanForUserOnDate(uProfile, referenceDk)?.nombre === miPlan.nombre) {
@@ -4868,7 +5359,20 @@ function _getAnalisisFestivosImpl(y, m) {
             }
 
             const horasRestantes = Math.max(0, ventanaHoras - horasTranscurridas);
-            
+
+            // Congelar evaluación: exceso/nominados/svcNombre no se recalcularán hasta adminResetMonth.
+            state.subastaSnapshot[keyMes] = {
+                exceso: excesoSvc,
+                nominados,
+                svcNombre: svc.nombre,
+                planNombre: miPlan.nombre,
+                planResidentes: residentes,
+                servicioCriterio: svc.subastaCriterioServicio || svc.nombre,
+                criterio: svc.subastaCriterio,
+                historico: historico || null
+            };
+            saveState(); // Fire and forget
+
             return {
                 estado,
                 exceso: excesoSvc,
@@ -4884,6 +5388,10 @@ function _getAnalisisFestivosImpl(y, m) {
         }
     }
     
+    // Todos los servicios cubiertos al terminar la ronda: persistir snapshot "libre" para evitar
+    // re-evaluación completa (getUserProgress × todos los residentes) en llamadas futuras.
+    state.subastaSnapshot[keyMes] = { svcNombre: null, exceso: 0, nominados: [], planNombre: miPlan.nombre };
+    saveState(); // Fire and forget
     return { estado: 'libre', exceso: 0, nominados: [], svcNombre: null };
 }
 
@@ -4983,6 +5491,33 @@ window.resetAllConfigMes = async function() {
     renderAll();
 };
 
+// 🔧 Libera un mes atascado en estado de subasta.
+// Uso: resetSubastaEstado(2026, 7)  ← agosto (m=7, 0-indexed)
+//      resetSubastaEstado(2026, 7, 'Plan R1')  ← solo ese plan
+// Borra subastaSnapshot, fechaFinRonda y subastasCerradasForzosas del mes para que el
+// motor re-evalúe desde cero en la próxima llamada a getAnalisisFestivos.
+window.resetSubastaEstado = async function(y, m, planNombre) {
+    let borrados = 0;
+    const _rmByPrefix = (obj, prefix, exact) => {
+        if (!obj) return;
+        Object.keys(obj).forEach(k => {
+            if (exact ? k === prefix : k.startsWith(prefix)) { delete obj[k]; borrados++; }
+        });
+    };
+    const prefExact = planNombre ? `${y}_${m}_${planNombre}` : null;
+    const prefStart = planNombre ? `${y}_${m}_${planNombre}` : `${y}_${m}_`;
+    _rmByPrefix(state.subastaSnapshot, prefExact || prefStart, !!planNombre);
+    _rmByPrefix(state.fechaFinRonda,   prefExact || prefStart, !!planNombre);
+    _rmByPrefix(state.subastasCerradasForzosas, planNombre ? `${y}_${m}_${planNombre}_` : `${y}_${m}_`, false);
+    if (borrados === 0) {
+        console.log(`ℹ️ resetSubastaEstado: no se encontraron entradas para y=${y} m=${m}${planNombre ? ' plan=' + planNombre : ''}.`);
+        return;
+    }
+    await saveState();
+    renderAll();
+    console.log(`✅ resetSubastaEstado: ${borrados} entrada(s) borradas. El motor re-evalúa desde cero.`);
+};
+
 // Invalida el cache de ordenSeleccion para que se recalcule en el próximo renderizado
 /**
  * Borra el configMes cacheado del mes indicado (o de todos si no se pasa clave)
@@ -5000,41 +5535,65 @@ function invalidateConfigMes(mk) {
 }
 
 /**
- * Devuelve el nombre del residente cuyo turno está activo en el mes dado.
+ * Invalida el cache de ordenSeleccion SOLO desde el mes indicado en adelante
+ * (por defecto, desde el mes actual real). Los meses pasados conservan su orden
+ * histórico: así una nueva alta o un cambio de fechas no reabre meses ya cerrados.
+ * @param {number} [fromY] - año desde el que invalidar (incluido)
+ * @param {number} [fromM] - mes 0-indexed desde el que invalidar (incluido)
+ */
+function invalidateConfigMesDesde(fromY, fromM) {
+    if (!state.configMes) return;
+    const hoy = new Date();
+    const fy = (fromY ?? hoy.getFullYear());
+    const fm = (fromM ?? hoy.getMonth());
+    const fromVal = fy * 12 + fm;
+    for (const k of Object.keys(state.configMes)) {
+        // Las claves tienen formato "YYYY_MM" con MM 0-indexed (getRotationKey)
+        const [ky, km] = k.split('_').map(n => parseInt(n, 10));
+        if (isNaN(ky) || isNaN(km)) continue;
+        if (ky * 12 + km >= fromVal) delete state.configMes[k];
+    }
+}
+
+/**
+ * Devuelve el nombre del residente cuyo turno está activo en el mes dado, DENTRO del
+ * plan consultado (compartimentación B2): el orden cacheado sigue siendo la lista plana
+ * de todos los planes, pero la evaluación de turno se restringe a los miembros del plan.
  * Genera/cachea el orden en state.configMes si no existe. Respeta grantedTurn,
  * bajasLargas, skippedTurns y pausados. Usa guard _computingTurn anti-recursión.
  * @param {number} y
  * @param {number} m - 0-indexed
- * @returns {string|null} nombre_mostrar o null si todos han completado
+ * @param {string} [forcedPlanName] - si se omite, usa getCurrentRotPlan (plan del
+ *   espectador: simulado > selector de delegado > plan propio calculado)
+ * @returns {string|null} nombre_mostrar o null si todos los del plan han completado
  */
-function getCurrentTurn(y, m) {
+function getCurrentTurn(y, m, forcedPlanName) {
     if (_computingTurn) return null; // Corta la recursión
     const mk = getRotationKey(y, m);
+    const planName = forcedPlanName || getCurrentRotPlan(formatDateKey(y, m, 1));
     
     // Si no hay configMes para este mes, lo generamos automáticamente
     if (!state.configMes || !state.configMes[mk]) {
-        const dk = formatDateKey(y, m, 15);
+        const dk = formatDateKey(y, m, 1);
         const targetKey = getRotationKey(y, m);
         let flatOrden = [];
         
         // Recorremos TODOS los planes en orden (R1, R2, R3, R4...)
         // Llamamos a getRotationForPlan para obtener el orden YA ROTADO de cada plan,
-        // igual que lo que se muestra en la UI de rotación.
+        // igual que lo que se muestra en la UI de rotación. No saltamos planes sin
+        // planRotations: un plan recién estrenado (ej. nuevos R1) se puebla solo desde
+        // sus miembros elegibles y debe entrar en la cola desde el primer mes.
         for (const plan of (promoConfig.planes || [])) {
-            if (!state.planRotations?.[plan.nombre]) continue;
-            
             // getRotationForPlan devuelve los grupos correctamente rotados para este mes
             const rotGroups = getRotationForPlan(plan.nombre, y, m);
             const planFlat = (rotGroups || []).flat();
             
             // Solo incluir a quienes realmente pertenecen a este plan este mes y están aprobados
-            // Solo incluir a quienes realmente pertenecen a este plan este mes y están aprobados (y permitir residentes virtuales que ya forman parte del plan rotado)
+            // (los virtuales pertenecen al plan de sus baseGroups y se incluyen siempre)
             const enEstePlan = planFlat.filter(n => {
                 const p = globalProfiles.find(pr2 => pr2.nombre_mostrar === n);
-                if (!p) return true; // Si es virtual, se incluye por defecto en su plan asignado
-                if (p.estado !== 'aprobado') return false;
-                const planActual = getPlanForUserOnDate(p, dk);
-                return planActual && planActual.nombre === plan.nombre;
+                if (p && p.estado !== 'aprobado') return false;
+                return residentePerteneceAPlan(n, plan.nombre, y, m);
             });
             
             for (const r of enEstePlan) {
@@ -5056,13 +5615,19 @@ function getCurrentTurn(y, m) {
     
     _computingTurn = true;
     try {
-        const orden = state.configMes[mk].ordenSeleccion || [];
+        // 🧭 COMPARTIMENTACIÓN B2: el turno se evalúa solo entre los miembros del plan
+        // consultado. El cache sigue siendo la lista plana global (compatibilidad), pero
+        // cada plan tiene su propia cola y su propio "residente en turno".
+        const orden = (state.configMes[mk].ordenSeleccion || [])
+            .filter(r => residentePerteneceAPlan(r, planName, y, m));
         if (orden.length === 0) return null;
-        
-        // 💡 TURNO OTORGADO: si el admin otorgó el turno a alguien, tiene prioridad absoluta
+
+        // 💡 TURNO OTORGADO: si el admin otorgó el turno a alguien DE ESTE PLAN, tiene
+        // prioridad absoluta. Si el agraciado es de otro plan, este plan lo ignora
+        // (y no lo borra: le pertenece a la evaluación del otro plan).
         if (!state.grantedTurn) state.grantedTurn = {};
         const grantee = state.grantedTurn[mk];
-        if (grantee) {
+        if (grantee && residentePerteneceAPlan(grantee, planName, y, m)) {
             const activosMesG = getResidentesActivosEnMes(y, m);
             const isActive = activosMesG.some(a => a.toLowerCase() === grantee.toLowerCase());
             if (isActive) {
@@ -5400,7 +5965,7 @@ async function guardarFechaContratoPerfil() {
                 .eq('id', uProfile.id);
             if (error) throw error;
             alert("¡Fecha de contrato actualizada con éxito!");
-            invalidateConfigMes();
+            invalidateConfigMesDesde(); // Solo desde el mes actual: los meses cerrados no se reabren
             renderPerfilUsuario();
         } catch (err) { alert("Error al guardar en Supabase."); }
     }
@@ -5423,7 +5988,7 @@ async function guardarFechaInicioPerfil() {
                 .eq('id', uProfile.id);
             if (error) throw error;
             alert("¡Fecha de inicio de residencia actualizada con éxito!");
-            invalidateConfigMes();
+            invalidateConfigMesDesde(); // Solo desde el mes actual: los meses cerrados no se reabren
             renderPerfilUsuario();
         } catch (err) { alert("Error al guardar en Supabase."); }
     }

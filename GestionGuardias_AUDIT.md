@@ -1,8 +1,8 @@
 # GestionGuardias App — Auditoría de Implementación
 **Versión PRD auditada:** 1.2  
 **Codebase auditado:** `app.js` (4 600+ líneas, monolítico vanilla JS + Supabase)  
-**Fecha de última revisión:** Mayo 2026  
-**Estado general:** 2 divergencias activas, 5 funciones no implementadas. 16 ítems resueltos o alineados con PRD v1.2. 1 ítem nuevo (W4-B) pendiente de implementación futura.
+**Fecha de última revisión:** Junio 2026  
+**Estado general:** 1 divergencia activa, 4 funciones no implementadas. 19 ítems resueltos o alineados con PRD v1.2. 1 ítem nuevo (W4-B) pendiente de implementación futura.
 
 ---
 
@@ -32,11 +32,12 @@ Este archivo es la **memoria de trabajo persistente** del Engineering Lead entre
 | W8 | ⚠️ Diverge | §8.3 | Calendario bloqueado durante ventana voluntaria — `isMyTurn` impide auto-asignación libre | `resuelto` |
 | W9 | ⚠️ Diverge | §8 | Panel de turno muestra "Turno de Nadie" en meses pasados para admin/delegado | `resuelto` |
 | W10 | ⚠️ Diverge | §8 / §9 | Subasta no aislada por plan — mezcla residentes, huecos y caché entre R1/R2/R3 | `resuelto` |
-| N1 | ❌ Falta | §12 | Sistema de notificaciones in-app completo | `pendiente` |
+| W11 | ⚠️ Diverge | §8 | `_getAnalisisFestivosImpl` usaba `getComputedShifts` para contar huecos cubiertos — inconsistente con `state.shifts` en `renderAlertaCargaMensual` y `ejecutarAsignacionForzosa`; mes atascado con "0 guardias" | `resuelto` |
+| N1 | ✅ Hecho | §12 | Sistema de notificaciones in-app completo | `resuelto` |
 | N2 | ❌ Falta | §15 / §8.4 | Registro persistente de huecos sin candidato válido | `pendiente` |
 | N3 | ❌ Falta | §5.1 | Calendario automático de huecos desde patrón configurable | `pendiente` |
 | N4 | ❌ Falta | §4 / D-02 | Importación de festivos desde fuente oficial | `pendiente` |
-| N5 | ❌ Falta | §8.4 / §15 | Botón admin "Activar subasta ya" para forzar asignación global inmediata | `pendiente` |
+| N5 | ❌ Falta | §8.5 / §8.6 | Propuesta de asignación automática (revisión admin antes de ejecutar) + Forzamiento de turno por inactividad | `pendiente` |
 
 ---
 
@@ -505,6 +506,36 @@ Síntomas adicionales detectados:
 
 ---
 
+### W11 — Subasta atascada: inconsistencia `getComputedShifts` vs `state.shifts` + falta de snapshot
+**Sección PRD:** §8  
+**Impacto:** Alto — mes bloqueado permanentemente en estado de subasta mostrando "0 guardias a repartir" y "No se han detectado huecos libres" al intentar forzar la asignación  
+**Archivos:** `app.js` — `_getAnalisisFestivosImpl`, `adminResetMonth`, `adminVaciarGeneracion`, `resetSubastaEstado`  
+**Estado:** `resuelto`
+
+**Diagnóstico:**  
+`_getAnalisisFestivosImpl` usaba `getComputedShifts()` (que aplica trades de mercadillo) para contar huecos cubiertos (`huecosAsignadosSvc`), mientras `renderAlertaCargaMensual` y `ejecutarAsignacionForzosa` usaban `state.shifts` directamente. La inconsistencia surgía ante trades de tipo `venta a Externo` o venta cross-plan: `computedShifts` elimina la entrada del vendedor (reemplazándola por VRE o por el comprador de otro plan), haciendo que `_getAnalisisFestivosImpl` detectara `excesoSvc > 0` y disparara la subasta; mientras las funciones de UI y forzado veían `state.shifts` con el slot cubierto → "0 guardias pendientes" y "0 huecos libres".
+
+Problema secundario: `fechaFinRonda[keyMes]` se persistía la primera vez que `rondaTerminada=true`, pero nunca se borraba salvo en `adminResetMonth`. Un mes que entró en subasta por la inconsistencia anterior quedaba atascado permanentemente aunque la causa se corrigiera, porque `_getAnalisisFestivosImpl` seguía re-evaluando y encontrando el `fechaFinRonda` persistido.
+
+**Solución aplicada (dos partes):**
+
+**Parte A — Fuente de datos unificada:** Revertir `_getAnalisisFestivosImpl` a usar `state.shifts` en lugar de `getComputedShifts()`. La subasta opera sobre el calendario de asignación original; el mercadillo actúa a posteriori y no debe afectar la detección de huecos obligatorios. `renderAlertaCargaMensual` y `ejecutarAsignacionForzosa` ya usaban `state.shifts` → ahora las tres funciones son consistentes.
+
+**Parte B — Mecanismo de snapshot (`state.subastaSnapshot[y_m_plan]`):**  
+Una vez `rondaTerminada=true`, el resultado de la evaluación completa se persiste en `state.subastaSnapshot[keyMes]` con campos:
+- `exceso`, `nominados`, `svcNombre`, `planNombre`, `planResidentes`, `servicioCriterio`, `criterio`, `historico`
+- Si ningún servicio tiene huecos → snapshot con `svcNombre: null` (sentinel "libre")
+
+Llamadas posteriores para el mismo mes+plan leen desde el snapshot (sin re-evaluar `rondaTerminada` ni el bucle de servicios). El `estado` (`subasta_abierta` / `subasta_cerrada`) se sigue calculando dinámicamente desde `fechaFinRonda` y `subastasCerradasForzosas`. Una verificación ligera (slot count del servicio snapshoteado) detecta si todos los huecos se cubrieron voluntariamente durante la ventana → transición a `libre` aunque el snapshot diga `exceso > 0`.
+
+**Limpieza del snapshot:** `adminResetMonth` y `adminVaciarGeneracion` borran `subastaSnapshot` y `fechaFinRonda` para el mes reset. La utilidad de consola `resetSubastaEstado(y, m, planNombre?)` también los borra (desatasca meses ya bloqueados sin reset completo).
+
+**Efectos secundarios detectados:** Meses con snapshot ya guardado (anteriores a este fix) pueden tener snapshot nulo/ausente — se evalúan normalmente en la primera llamada y escriben el snapshot en ese momento. Comportamiento transparente para el usuario.
+
+**Archivos modificados:** `app.js` — ~75 líneas añadidas/modificadas en `_getAnalisisFestivosImpl` (snapshot check + write), `adminResetMonth` (2 limpiezas añadidas), `adminVaciarGeneracion` (2 resets añadidos), `resetSubastaEstado` (limpieza de subastaSnapshot + refactor helper interno).
+
+---
+
 ## Ítems ❌ — No implementados
 
 ---
@@ -512,7 +543,7 @@ Síntomas adicionales detectados:
 ### N1 — Sistema de notificaciones in-app completo
 **Sección PRD:** §12  
 **Impacto:** Alto — bloquea el loop de comunicación de §8.1, §8.4 y §11  
-**Estado:** `pendiente`
+**Estado:** `resuelto`
 
 **Diagnóstico:**
 Existe un inbox básico de mercadillo en la pestaña "Merc". No existe tabla `Notificaciones` en Supabase, no hay badge de no-leídas, no hay panel propio. Eventos sin cobertura:
@@ -547,10 +578,56 @@ Existe un inbox básico de mercadillo en la pestaña "Merc". No existe tabla `No
 **Dependencias posteriores:** N2
 
 ### Resultado
-**Estado final:** `pendiente`  
-**Decisiones tomadas:** —  
-**Efectos secundarios detectados:** —  
-**Archivos modificados:** —
+**Estado final:** `resuelto`
+
+**Decisiones tomadas:**
+- Tabla `notificaciones` en Supabase: `id uuid PK`, `usuario_id uuid FK→auth.users`, `tipo text CHECK(enum)`, `payload jsonb`, `leida bool DEFAULT false`, `timestamp timestamptz DEFAULT now()`. RLS: SELECT solo propio, INSERT cualquier autenticado (necesario para que un usuario notifique a otro), UPDATE solo propio.
+- Índice UNIQUE en `(usuario_id, payload->>'year', payload->>'month') WHERE tipo='turno_asignacion'` para evitar duplicados de turno al recargar.
+- **`insertNotificacion(usuarioId, tipo, payload)`** — fire-and-forget; ignora errores de red silenciosamente para no romper el flujo principal. Si el destinatario es el usuario actual, recarga el panel inmediatamente.
+- **`loadNotificaciones()`** — cargada al arrancar sesión (en `loadState`); trae las últimas 60 más recientes ordenadas desc.
+- **Bell icon** con Tabler Icons (CDN), badge rojo con contador en el header. Solo visible cuando `estado === 'aprobado'`. Controlado en `renderUserHeader()`.
+- **Panel flotante** `position:fixed` anclado a `top: var(--header-h)`, cierre al click fuera. Inline "Aceptar/Rechazar" buttons en notificaciones de tipo `propuesta_mercadillo` que llaman a `processTrade` directamente.
+- **Click en notificación**: marca leída, cierra panel, navega a la vista correcta cambiando `curDate` si el payload tiene `year/month`.
+- **`maybeNotifyTurnChange(y, m)`** — dedup de sesión con `_lastNotifTurnKey`; llamada después de `toggleShift`, `userSkipTurn`, `adminSkipTurn`, `adminGrantTurn`.
+- **`_notifyNewTrade(trade)`** — llamada en los tres creadores de trade; solo para trades `pending` a no-Externo.
+- **`_notifyTradeResolved(id)`** — llamada en `processTrade` después de `saveState()`; solo notifica al requester si es distinto del usuario actual.
+- **`forzarCierreSubasta`** — notifica `ventana_voluntaria` a todos los `planResidentes` del análisis al cerrar la subasta forzosamente.
+- **`ejecutarAsignacionForzosa`** — notifica `guardia_forzada` al residente por cada guardia asignada; notifica `hueco_sin_candidato` a todos los admin/delegado cuando `huecosImpossibles.length > 0`.
+
+**Tipos de notificación — colores implementados:**
+| Tipo | Icono | Fondo círculo | Color icono |
+|---|---|---|---|
+| `turno_asignacion` | 🕐 | #B5D4F4 | #0C447C |
+| `guardia_forzada` | ⚠️ | #F5C4B3 | #993C1D |
+| `ventana_voluntaria` | 📅 | #B5D4F4 | #0C447C |
+| `propuesta_mercadillo` | 🔄 | #C0DD97 | #3B6D11 |
+| `propuesta_resuelta` | ✅ | #C0DD97 | #3B6D11 |
+| `hueco_sin_candidato` | 🚨 | #F7C1C1 | #A32D2D |
+
+**SQL a ejecutar en el dashboard de Supabase (proyecto elmpelhplacgkgfuiwno):**
+```sql
+CREATE TABLE public.notificaciones (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    usuario_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    tipo TEXT NOT NULL CHECK (tipo IN ('turno_asignacion','guardia_forzada','ventana_voluntaria','propuesta_mercadillo','propuesta_resuelta','hueco_sin_candidato')),
+    payload JSONB NOT NULL DEFAULT '{}',
+    leida BOOLEAN NOT NULL DEFAULT false,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX notificaciones_usuario_ts_idx ON public.notificaciones(usuario_id, timestamp DESC);
+CREATE UNIQUE INDEX notificaciones_turno_unique ON public.notificaciones(usuario_id, (payload->>'year'), (payload->>'month')) WHERE tipo = 'turno_asignacion';
+ALTER TABLE public.notificaciones ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "read_own" ON public.notificaciones FOR SELECT USING (auth.uid() = usuario_id);
+CREATE POLICY "insert_authenticated" ON public.notificaciones FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "update_own" ON public.notificaciones FOR UPDATE USING (auth.uid() = usuario_id) WITH CHECK (auth.uid() = usuario_id);
+```
+
+**Efectos secundarios detectados:**
+- `_notifyNewTrade` es fire-and-forget; si la tabla aún no existe, el error queda silenciado en consola y la operación de trade continúa sin problema.
+- `maybeNotifyTurnChange` usa dedup de sesión (`_lastNotifTurnKey`); en la primera carga del mes, dispara siempre para el titular actual — notificaciones de turno duplicadas por sesión son posibles si el mismo usuario recarga con el mismo turno activo, pero el índice UNIQUE de Supabase lo previene a nivel de BD.
+- No implementa Supabase Realtime (suscripción push) — recarga manual al navegar/actuar. Extensión futura.
+
+**Archivos modificados:** `app.js` (módulo NOTIFICACIONES ~170 líneas + hooks en 11 funciones existentes), `index.html` (Tabler Icons CDN, bell button, panel div, cache-buster v=1.4), `style.css` (bloque NOTIFICACIONES ~130 líneas).
 
 ---
 
@@ -639,39 +716,40 @@ No existe campo de localidad en el contenedor, no hay API conectada, solo entrad
 
 ---
 
-### N5 — Botón admin "Activar subasta ya"
-**Sección PRD:** §8.4 / §15  
-**Impacto:** Medio — herramienta de emergencia y debug para lanzar la asignación forzosa global sin esperar las condiciones temporales  
+### N5 — Propuesta de asignación automática + Forzamiento de turno por inactividad
+**Sección PRD:** §8.5 / §8.6  
+**Impacto:** Medio — herramienta de emergencia con supervisión humana para cubrir huecos globalmente; mecanismo para desbloquear turnos inactivos  
 **Estado:** `pendiente`
 
 **Diagnóstico:**
-La asignación forzosa (`ejecutarAsignacionForzosa`) y el cierre de ventana voluntaria (`forzarCierreSubasta`) solo son accesibles cuando `getAnalisisFestivos` detecta activamente un servicio con huecos pendientes y lo expone en el banner de `renderAlertaCargaMensual`. No existe ningún punto de entrada que permita al admin lanzar el proceso completo de forma inmediata e incondicional.
+La asignación forzosa (`ejecutarAsignacionForzosa`) y el cierre de ventana voluntaria (`forzarCierreSubasta`) solo son accesibles cuando `getAnalisisFestivos` detecta activamente un servicio con huecos pendientes y lo expone en el banner de `renderAlertaCargaMensual`. No existe ningún punto de entrada que permita al admin iniciar el proceso completo de forma inmediata e incondicional.
 
-Ambas funciones operan sobre **un único servicio** a la vez y requieren que el análisis previo devuelva ese servicio como activo. Si hay múltiples servicios con cobertura incompleta, el admin debe ejecutar el proceso servicio a servicio, lo que resulta impracticable en situaciones de urgencia.
+Ambas funciones operan sobre **un único servicio** a la vez y requieren que el análisis previo devuelva ese servicio como activo. Si hay múltiples servicios con cobertura incompleta, el admin debe ejecutar el proceso servicio a servicio. Adicionalmente, no hay mecanismo para desbloquear automáticamente a un residente que no confirma su turno dentro de un umbral de tiempo configurable.
 
-```js
-// Solo accesible cuando el análisis dice que hay algo pendiente — no hay override
-async function ejecutarAsignacionForzosa(y, m, targetSvcNombre) {
-    const analisis = getAnalisisFestivos(y, m);
-    if (analisis.estado === 'libre' || analisis.svcNombre !== targetSvcNombre) return alert("El estado ha cambiado.");
-    // ...
-}
-```
+**Nota de rediseño (Junio 2026):** El concepto original de "Activar subasta ya" (botón de ejecución inmediata vía `activarSubastaGlobal`) fue reemplazado por una **propuesta de asignación con revisión previa** (§8.5) para mantener supervisión humana. Se añade además el **forzamiento de turno por inactividad** (§8.6) como mecanismo complementario. No implementar `activarSubastaGlobal` como función de ejecución directa.
 
-**Acción requerida:**
-- Crear función `activarSubastaGlobal(y, m)` que itere sobre todos los servicios con `subastaTrigger` configurado y ejecute para cada uno: cierre de ventana voluntaria + asignación forzosa, independientemente del estado actual
-- Añadir botón "⚡ Activar subasta ya" en el panel admin (solo `isAdmin`), visible en la cabecera del calendario o en la pestaña de administración, con `confirm()` de confirmación explícita antes de proceder
-- El botón opera sobre el mes activo (`curDate`)
-- Si un servicio ya tiene todos sus huecos cubiertos, saltarlo silenciosamente
+**Acción requerida (§8.5 — Propuesta de asignación automática):**
+- Calcular propuesta completa de reparto para todos los servicios con `subastaTrigger` en el mes activo, usando los mismos criterios de prioridad que `ejecutarAsignacionForzosa`
+- Presentar la propuesta en un modal/panel editable antes de persistir cualquier cambio
+- El admin puede modificar asignaciones individuales dentro de la propuesta
+- Solo al confirmar se ejecutan cambios en `state.shifts`
+- Exclusivo para `isAdmin`
+
+**Acción requerida (§8.6 — Forzamiento de turno por inactividad):**
+- Umbral de inactividad de turno configurable (en horas) en la configuración de la promoción
+- Botón disponible para `isAdmin` y `isDelegado` cuando el residente en turno supera el umbral
+- Asigna el mínimo requerido al residente inactivo usando criterios históricos de §8.4
+- Avanza el turno al siguiente residente en `ordenSeleccion` tras la asignación
+- Requiere confirmación explícita
 
 **Dependencias previas:** Ninguna — funciona de forma autónoma  
 **Dependencias posteriores:**
-- Cuando **N1** esté implementado: los residentes afectados por asignaciones forzosas recibirán la notificación `guardia_forzada` automáticamente (N5 es productor de ese evento)
-- Cuando **N2** esté implementado: los huecos sin candidato generados por N5 quedarán registrados persistentemente (N5 es productor de esos eventos)
+- Cuando **N1** esté implementado: los residentes afectados recibirán la notificación `guardia_forzada` automáticamente (N5 es productor de ese evento)
+- Cuando **N2** esté implementado: los huecos sin candidato válido quedarán registrados persistentemente (N5 es productor de esos eventos)
 
 ### Resultado
 **Estado final:** `pendiente`  
-**Decisiones tomadas:** —  
+**Decisiones tomadas:** Concepto "Activar subasta ya" rediseñado — propuesta con revisión reemplaza ejecución inmediata (Junio 2026)  
 **Efectos secundarios detectados:** —  
 **Archivos modificados:** —
 
@@ -725,3 +803,6 @@ Para referencia del agente: estas secciones son conformes al PRD v0.7. No requie
 | v2.0 | Mayo 2026 | C22 nuevo y resuelto: bug sistémico de lookup de servicio por nombre sin contexto de plan. Introducidos `getSvcConfig`/`getSvcConfigForUser`; `isServiceEnabledOnDate` refactorizado; sort por `ordenSubasta` en `getAnalisisFestivos`; `getSalienteDaysForShift`/`getShiftHours` usan plan real del residente en lugar de Plan R1 fijo. |
 | v2.1 | Mayo 2026 | W10 nuevo y resuelto (PR #8): subasta completamente aislada por plan. Guard `_computingAnalisis` + extracción a `_getAnalisisFestivosImpl` (previene stack overflow). `rondaTerminada`, candidatos, conteo de huecos y claves de caché filtrados al plan propio. `includeCurrentMonth=true` para todos los criterios históricos (acumula desde inicio del año de residencia). `criterioTexto` corregido; case `historico_servicio_dinamico` añadido. |
 | v2.2 | Mayo 2026 | W8 resuelto: ventana voluntaria exenta del guard de turno solo para el servicio en subasta. W9 resuelto: banner admin muestra estado real (subasta/completado) cuando `turnUser === null`; botón "Forzosa" recuperado del código muerto e integrado en el panel admin. |
+| v2.3 | Junio 2026 | W11 nuevo y resuelto: inconsistencia `getComputedShifts`/`state.shifts` en `_getAnalisisFestivosImpl` causaba mes atascado con "0 guardias". Fix en dos partes: (A) revertir a `state.shifts` para contar huecos cubiertos; (B) introducir `state.subastaSnapshot[y_m_plan]` que congela exceso/nominados/svcNombre la primera vez que `rondaTerminada=true`, evitando re-evaluación completa y el bug de `fechaFinRonda` persistido. `adminResetMonth` y `adminVaciarGeneracion` borran el snapshot; `resetSubastaEstado` también. |
+| v2.4 | Junio 2026 | N5 rediseñado: concepto "Activar subasta ya" (ejecución inmediata) reemplazado por "Propuesta de asignación automática" (§8.5, revisión admin antes de ejecutar, no destructiva hasta confirmar) + "Forzamiento de turno por inactividad" (§8.6, umbral configurable, disponible para admin y delegado). PRD actualizado a v1.3. |
+| v2.5 | Junio 2026 | N1 resuelto: sistema de notificaciones in-app completo. Tabla `notificaciones` en Supabase (6 tipos con RLS). Módulo JS (insertNotificacion, loadNotificaciones, markNotifRead, markAllNotifsRead, renderNotifPanel, toggleNotifPanel, maybeNotifyTurnChange, _notifyNewTrade, _notifyTradeResolved). Bell icon con badge en header. Panel flotante con acciones inline para mercadillo. Hooks en 11 funciones existentes. |

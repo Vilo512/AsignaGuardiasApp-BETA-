@@ -184,7 +184,9 @@ El admin define para cada Plan de Guardias un conjunto de **reglas de asignació
 
 **Panel de turno en meses pasados:** El indicador de turno activo (banner "Turno de X") solo debe mostrarse para el mes activo o meses futuros. Para meses ya finalizados, el panel de turno no debe renderizarse — su información carece de significado operativo y genera confusión.
 
-**Invariante de reset:** La función de reset mensual debe dejar el mes en estado completamente limpio, equivalente a un mes sin actividad. Esto incluye borrar cualquier marca de subasta cerrada forzosamente (`subastasCerradasForzosas`) para ese mes, de modo que el flujo completo pueda reiniciarse desde cero.
+**Invariante de reset:** La función de reset mensual debe dejar el mes en estado completamente limpio, equivalente a un mes sin actividad. Esto incluye borrar cualquier marca de subasta cerrada forzosamente (`subastasCerradasForzosas`), el timestamp de fin de ronda (`fechaFinRonda`) y el snapshot de evaluación (`subastaSnapshot`) para ese mes, de modo que el flujo completo pueda reiniciarse desde cero.
+
+**Evaluación congelada (snapshot):** La primera vez que `rondaTerminada=true` para un mes+plan, `_getAnalisisFestivosImpl` persiste el resultado en `state.subastaSnapshot[y_m_plan]` con los campos `exceso`, `nominados`, `svcNombre`, `planNombre`, `planResidentes`, `servicioCriterio`, `criterio`, `historico`. Las llamadas posteriores leen desde el snapshot sin re-evaluar el bucle de servicios ni el check `rondaTerminada`. El `estado` (`subasta_abierta` / `subasta_cerrada`) se sigue calculando en tiempo real desde `fechaFinRonda` y `subastasCerradasForzosas`. Si durante la ventana voluntaria todos los huecos son cubiertos voluntariamente (verificación ligera sobre `state.shifts`), la función transiciona a `libre` aunque el snapshot indique `exceso > 0`.
 
 ### 8.1 Selección activa
 1. El residente en turno recibe notificación in-app
@@ -218,18 +220,35 @@ Transcurrida la ventana voluntaria, los huecos obligatorios sin cubrir se asigna
 - **Sin candidato válido:** Si todos los elegibles tienen conflicto de saliente/entrante → el hueco queda sin cubrir, se notifica al admin y delegados, y queda registrado en el sistema como evidencia de exceso de carga asistencial
 - **Soft-lock en asignación manual:** Cuando el admin asigna forzosamente a un residente desde el calendario, el sistema advierte si la asignación viola restricciones de saliente/entrante. El admin puede confirmar de todas formas (aviso sin bloqueo).
 
-### 8.5 Override de emergencia — "Activar subasta ya"
-El admin dispone de un botón de override que lanza la asignación forzosa global del mes activo de forma inmediata, sin esperar a que expire la ventana voluntaria ni a que `getAnalisisFestivos` detecte activamente huecos pendientes.
+### 8.5 Propuesta de asignación automática
+
+Antes de ejecutar cualquier asignación forzosa global, el sistema calcula la propuesta completa de reparto y la presenta al admin para revisión. Solo tras confirmación explícita se materializan cambios en `state.shifts`.
 
 **Comportamiento:**
 - Opera sobre todos los servicios con `subastaTrigger` configurado en el mes activo (`curDate`)
-- Para cada servicio: cierra la ventana voluntaria (si estaba abierta) y ejecuta la asignación forzosa
-- Si un servicio ya tiene todos sus huecos cubiertos, se salta silenciosamente
-- Requiere confirmación explícita antes de proceder
+- Usa los mismos criterios de prioridad que la asignación forzosa (§8.4): histórico de guardias, restricciones de saliente/entrante, criterio configurado por servicio
+- Presenta al admin una vista de propuesta: para cada hueco pendiente, el residente propuesto y el criterio aplicado
+- El admin puede modificar asignaciones individuales dentro de la propuesta antes de confirmar
+- La propuesta es no destructiva — ningún dato de `state.shifts` se modifica hasta que el admin confirma
+- Requiere confirmación explícita antes de ejecutar
 - Visible y accesible exclusivamente para `isAdmin`
+- Si todos los huecos de un servicio ya están cubiertos, ese servicio se omite silenciosamente
 
 **Directiva de implementación:**
-Las funciones actuales `forzarCierreSubasta` y `ejecutarAsignacionForzosa` operan sobre un único servicio y dependen de que `getAnalisisFestivos` lo devuelva como activo en ese momento. El override debe implementarse como una nueva función `activarSubastaGlobal(y, m)` que bypasee esa dependencia e itere directamente sobre `promoConfig.planes[*].servicios` filtrando por `svc.subastaTrigger.length > 0`. No modificar las funciones existentes — el override es una ruta paralela de emergencia.
+Reemplaza el concepto anterior de "Activar subasta ya" (ejecución inmediata sin revisión). La UI debe mostrar un modal o panel de propuesta que permita al admin revisar, ajustar y confirmar antes de que ninguna asignación se persista. No implementar `activarSubastaGlobal` como función de ejecución directa.
+
+### 8.6 Forzamiento de turno por inactividad
+
+Cuando un residente ha mantenido su turno de elección activo durante más tiempo del umbral configurado sin confirmar una guardia, el admin o delegado puede forzar la asignación de las guardias mínimas requeridas para ese residente y pasar el turno al siguiente.
+
+**Comportamiento:**
+- Umbral de inactividad configurable por el admin (en horas), almacenado en la configuración de la promoción
+- El sistema asigna al residente inactivo el mínimo de guardias requeridas para ese turno, usando los mismos criterios de prioridad histórica que §8.4
+- Tras la asignación, el turno avanza automáticamente al siguiente residente en `ordenSeleccion`
+- El residente afectado recibe una notificación de asignación forzosa por inactividad (cuando N1 esté implementado)
+- Requiere confirmación explícita antes de ejecutar
+- Disponible para `isAdmin` y `isDelegado`
+- Solo opera sobre el residente cuyo turno está activo en ese momento — no es una operación global
 
 ---
 
@@ -644,3 +663,4 @@ EventoAuditoria
 | v1.0 | §13.1: clarificación de fuente única de verdad (`curDate`); eliminada la excepción implícita de la vista de Rotación que mantenía su propio estado de mes independiente. |
 | v1.1 | §8.5 nuevo: override de emergencia "Activar subasta ya" con directiva de implementación (`activarSubastaGlobal`, ruta paralela sin modificar funciones existentes). |
 | v1.2 | §8: invariante de reset (limpiar `subastasCerradasForzosas`), panel de turno solo en mes activo/futuro. §8.3: calendario abierto durante ventana voluntaria, `isMyTurn` no bloquea en estado `subasta_abierta`. |
+| v1.3 | §8.5 rediseñado: "Propuesta de asignación automática" reemplaza "Activar subasta ya" — propuesta editable con revisión admin antes de ejecutar, no destructiva hasta confirmar. §8.6 nuevo: "Forzamiento de turno por inactividad" — umbral configurable, admin/delegado asigna mínimo al residente inactivo y avanza turno. |
