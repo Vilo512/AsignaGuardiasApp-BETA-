@@ -1397,6 +1397,46 @@ function puedeGestionarPlan(planName, y, m) {
     return !!propio && propio.nombre === planName;
 }
 
+/**
+ * Construye el contexto de visibilidad del plan visualizado para un mes (B1):
+ * nombre del plan (simulación > selector de delegado > plan propio), sus residentes
+ * (sin graduados ni históricos salidos) y los nombres de sus servicios.
+ * @param {number} y
+ * @param {number} m - 0-indexed
+ * @returns {{planName: string, residentes: string[], svcNames: string[], y: number, m: number}|null}
+ *          null si no hay sesión (vista pública: se muestra todo)
+ */
+function getPlanVistaContext(y, m) {
+    if (!currentUserProfile) return null;
+    const planName = getCurrentRotPlan(formatDateKey(y, m, 1));
+    const plan = (promoConfig.planes || []).find(p => p.nombre === planName);
+    return {
+        planName, y, m,
+        residentes: getResidentesDePlan(planName, y, m),
+        svcNames: plan ? plan.servicios.map(s => s.nombre) : (promoConfig.servicios || []).map(s => s.nombre)
+    };
+}
+
+/**
+ * Indica si el titular de una guardia debe mostrarse en el calendario del plan del
+ * contexto: miembros del plan siempre; Externo/VRE solo en servicios del plan; foráneos
+ * (residentes de otro plan cubriendo una guardia de este) solo si su propio plan no
+ * reclama ese servicio — misma regla anti-colisión de nombres que el exportador.
+ * @param {string} u - nombre_mostrar del titular
+ * @param {string} svcNombre
+ * @param {Object|null} ctx - resultado de getPlanVistaContext (null = sin filtro)
+ * @returns {boolean}
+ */
+function esTitularVisibleEnPlan(u, svcNombre, ctx) {
+    if (!ctx) return true;
+    if (ctx.residentes.includes(u)) return true;
+    if (!ctx.svcNames.includes(svcNombre)) return false;
+    if (u === 'Externo' || u.startsWith('VRE')) return true;
+    const propioPlan = (promoConfig.planes || []).find(p =>
+        p.nombre !== ctx.planName && residentePerteneceAPlan(u, p.nombre, ctx.y, ctx.m));
+    return !(propioPlan && propioPlan.servicios.some(s => s.nombre === svcNombre));
+}
+
 
 // ============================================================
 // MÓDULO: MOTOR_EVALUACION
@@ -2372,12 +2412,12 @@ function renderMainCalendar() {
   // Obtenemos todos los servicios disponibles globalmente para pintar los iconos
   const todosLosServicios = getAllUniqueServices();
   
-  let userLevelName = 'ALL';
-  if (currentUserProfile) {
-      const plan = getPlanForUserOnDate(currentUserProfile, formatDateKey(y, m, 1));
-      if (plan) userLevelName = plan.nombre;
-  }
-  
+  // 🧭 B1: todo el calendario se pinta desde el contexto del plan visualizado
+  // (simulación > selector de delegado > plan propio). Cada residente ve únicamente
+  // los días habilitados, servicios y compañeros de su plan.
+  const planVistaCtx = getPlanVistaContext(y, m);
+  const userLevelName = planVistaCtx ? planVistaCtx.planName : 'ALL';
+
   for(let d=1; d<=getDaysInMonth(y,m); d++) {
     const dateKey = formatDateKey(y, m, d);
     const dayShifts = state.shifts[dateKey] || {};
@@ -2398,14 +2438,18 @@ function renderMainCalendar() {
 
     // 🛡️ AQUÍ ESTABA EL ERROR: Recorremos los servicios definidos arriba
     todosLosServicios.forEach(svc => {
-        let assigned = Object.keys(dayShifts || {}).filter(u => dayShifts[u] === svc.nombre);
+        // 🧭 B1: los servicios que no pertenecen al plan visualizado no se pintan
+        if (planVistaCtx && !planVistaCtx.svcNames.includes(svc.nombre)) return;
+        let assigned = Object.keys(dayShifts || {}).filter(u =>
+            dayShifts[u] === svc.nombre && esTitularVisibleEnPlan(u, svc.nombre, planVistaCtx));
         if (showOnlyMine && (simulatedViewUser || loggedInUser)) assigned = assigned.filter(u => u === (simulatedViewUser ?? loggedInUser));
         assigned.forEach(u => {
             html += `<div class="shift-badge" style="background:${svc.color};">👤 ${getInitials(u)}</div>`;
         });
         const pd = getPlazasForDay(svc, dateKey);
         if (pd > 1) {
-            const filled = Object.keys(dayShifts || {}).filter(u => dayShifts[u] === svc.nombre).length;
+            const filled = Object.keys(dayShifts || {}).filter(u =>
+                dayShifts[u] === svc.nombre && esTitularVisibleEnPlan(u, svc.nombre, planVistaCtx)).length;
             multihuecoItems.push({ color: svc.color, filled, pd });
         }
     });
@@ -2456,8 +2500,12 @@ function openShiftModal(y, m, d, dateKey) {
   const _analisisModal = getAnalisisFestivos(y, m);
   const isSubastaAbierta = _analisisModal.estado === 'subasta_abierta';
 
-  // DETERMINACIÓN DIARIA: ¿Qué plan tengo yo HOY en el calendario?
-  const myPlanOnDate = getPlanForUserOnDate(currentUserProfile, dateKey);
+  // DETERMINACIÓN DIARIA: plan del usuario EFECTIVO en esta fecha. Si hay simulación
+  // activa, el del residente simulado (currentUserProfile sigue siendo el admin).
+  const viewProfile = (simulatedViewUser !== null
+      ? globalProfiles.find(p => p.nombre_mostrar === simulatedViewUser)
+      : null) || currentUserProfile;
+  const myPlanOnDate = getPlanForUserOnDate(viewProfile, dateKey);
   const serviciosDisponibles = myPlanOnDate ? myPlanOnDate.servicios : [];
   const pDataFull = getUserProgress(viewUser, y, m).progress;
   const theTag = getDayTag(y, m, d);
@@ -2686,11 +2734,9 @@ function renderMercadoCalendar() {
   else { document.getElementById('merc-logged-zone').style.display = 'none'; document.getElementById('merc-unlogged-zone').style.display = 'block'; }
   for(let i=0; i<getFirstDayOffset(y,m); i++) grid.innerHTML += `<div class="cal-cell empty"></div>`;
   
-  let userLevelName = 'ALL';
-  if (currentUserProfile) {
-      const plan = getPlanForUserOnDate(currentUserProfile, formatDateKey(y, m, 1));
-      if (plan) userLevelName = plan.nombre;
-  }
+  // 🧭 B1: mismo contexto de plan visualizado que el calendario principal
+  const planVistaCtxMerc = getPlanVistaContext(y, m);
+  const userLevelName = planVistaCtxMerc ? planVistaCtxMerc.planName : 'ALL';
   for(let d=1; d<=getDaysInMonth(y,m); d++) {
     const dk = formatDateKey(y, m, d);
     const dayShifts = computed[dk] || {};
@@ -2699,9 +2745,11 @@ function renderMercadoCalendar() {
     const bgStyle = getCellBackgroundStyle(dk, y, m, d, userLevelName);
     if (bgStyle) cell.setAttribute('style', bgStyle);
     let html = `<div class="day-number">${d}</div>`;
-    
+
     promoConfig.servicios.forEach(svc => {
-        let assigned = Object.keys(dayShifts || {}).filter(u => dayShifts[u] === svc.nombre);
+        if (planVistaCtxMerc && !planVistaCtxMerc.svcNames.includes(svc.nombre)) return;
+        let assigned = Object.keys(dayShifts || {}).filter(u =>
+            dayShifts[u] === svc.nombre && esTitularVisibleEnPlan(u, svc.nombre, planVistaCtxMerc));
         if (showOnlyMine && (simulatedViewUser || loggedInUser)) assigned = assigned.filter(u => u === (simulatedViewUser ?? loggedInUser));
         assigned.forEach(u => {
             let isVre = u.startsWith('VRE');
