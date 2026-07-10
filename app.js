@@ -571,6 +571,11 @@ async function loadState() {
           console.warn('[Safety] Limpiando state.graduados falsos – planRotations sin grupos reales configurados.');
           state.graduados = [];
       }
+      // 🧭 B7: migración única de habilitaciones a claves por plan (svc@@plan)
+      if (migrarHabilitacionesPorPlan()) {
+          console.log('🧭 [B7] state.habilitaciones migrado a claves por plan. Persistiendo...');
+          saveState(); // fire-and-forget; la migración es idempotente
+      }
     } else {
       state.shifts = {}; state.customRotations = {}; state.pedWhitelist = {}; state.festivos = {}; state.trades = [];
       const _initPlanName = promoConfig.planes?.[0]?.nombre || "Plan Base";
@@ -923,18 +928,24 @@ function getUserLevelOnDate(userProfile, dateKey) {
     const startParts = userProfile.fecha_inicio_residencia.split('-');
     const startDate = new Date(parseInt(startParts[0]), parseInt(startParts[1]) - 1, parseInt(startParts[2]));
     
-    if (targetDate < startDate) return 0; // Fecha anterior a ser residente
+    const targetVal = targetDate.getFullYear() * 12 + targetDate.getMonth();
+
+    // 🗓️ REGLA MENSUAL (entrada): el mes de inicio de residencia cuenta ENTERO como
+    // primer mes en el plan — quien empieza el 5 de junio pertenece al plan R1 desde
+    // el 1 de junio. Antes se comparaba el día exacto y el residente no existía para
+    // las listas mensuales (que muestrean el día 1) hasta su primer mes completo.
+    const inicioVal = startDate.getFullYear() * 12 + startDate.getMonth();
+    if (targetVal < inicioVal) return 0; // Mes anterior a ser residente
 
     // EL SALVAVIDAS: Si no ha configurado el cambio de contrato, usamos su fecha de inicio
     let savedDate = userProfile.fecha_cambio_contrato || userProfile.fecha_inicio_residencia;
     const cambioParts = savedDate.split('-');
 
-    // 🗓️ REGLA MENSUAL: el nivel/plan nunca cambia a mitad de mes. El mes que contiene
-    // la fecha de cambio de contrato cuenta ENTERO como el nivel nuevo (el posterior):
-    // cambio el 27/05 → todo mayo ya es R2. Se comparan meses completos, no días.
+    // 🗓️ REGLA MENSUAL (cambio): el nivel/plan nunca cambia a mitad de mes. El mes que
+    // contiene la fecha de cambio de contrato cuenta ENTERO como el nivel nuevo (el
+    // posterior): cambio el 27/05 → todo mayo ya es R2. Se comparan meses, no días.
     const cambioMes = parseInt(cambioParts[1], 10) - 1;
     const efectivoVal = targetDate.getFullYear() * 12 + cambioMes;
-    const targetVal = targetDate.getFullYear() * 12 + targetDate.getMonth();
 
     let level = targetDate.getFullYear() - startDate.getFullYear() + 1;
     if (targetVal < efectivoVal) level--; // Aún no ha cruzado su mes de cambio este año
@@ -2057,7 +2068,7 @@ function navAdmin(sub) {
       if (adminOnlySubs.includes(t)) tab.style.display = isAdmin ? '' : 'none';
     }
   });
-  document.getElementById('admin-nav-header').style.display = (sub === 'calendario' || sub === 'horas') ? 'block' : 'none';
+  document.getElementById('admin-nav-header').style.display = (sub === 'calendario' || sub === 'horas' || sub === 'excepciones') ? 'block' : 'none';
   document.getElementById('admin-cal-views').style.display = (sub === 'calendario') ? 'block' : 'none';
   if (sub === 'cuentas') renderAccountsList();
   if (sub === 'calendario') renderAdminCalendar();
@@ -2192,8 +2203,39 @@ function getServiceColor(svcName) {
  * @param {string|null} planName
  * @returns {boolean}
  */
+/**
+ * 🧭 B7 — Migración de una sola vez: state.habilitaciones pasa de indexarse por nombre
+ * de servicio ("Urgencias") a indexarse por servicio y plan ("Urgencias@@Plan R1").
+ * Antes, dos planes con un servicio del mismo nombre COMPARTÍAN los días pintados: los
+ * días habilitados de R1 se veían/bloqueaban en R2 y viceversa. Los valores legacy se
+ * copian a TODOS los planes que tienen ese nombre de servicio (conserva exactamente el
+ * comportamiento visible previo) y la clave legacy se elimina. Claves de servicios
+ * huérfanos (renombrados/borrados) se conservan tal cual.
+ * @returns {boolean} true si hubo cambios que persistir
+ */
+function migrarHabilitacionesPorPlan() {
+    if (!promoConfig.planes || promoConfig.planes.length === 0) return false;
+    if (!state.habilitaciones || state.habilitacionesPorPlan) return false;
+    let changed = false;
+    for (const dk of Object.keys(state.habilitaciones)) {
+        const dia = state.habilitaciones[dk];
+        for (const key of Object.keys(dia)) {
+            if (key.includes('@@')) continue;
+            const duenos = promoConfig.planes.filter(p => (p.servicios || []).some(s => s.nombre === key));
+            if (duenos.length === 0) continue;
+            for (const p of duenos) {
+                if (dia[`${key}@@${p.nombre}`] === undefined) dia[`${key}@@${p.nombre}`] = dia[key];
+            }
+            delete dia[key];
+            changed = true;
+        }
+    }
+    state.habilitacionesPorPlan = true; // marca: no volver a escanear
+    return changed;
+}
+
 function isServiceEnabledOnDate(svcName, dk, planName = null) {
-    let svc;
+    let svc, ownerPlanName = planName;
     if (planName) {
         svc = getSvcConfig(svcName, planName);
     } else {
@@ -2202,10 +2244,16 @@ function isServiceEnabledOnDate(svcName, dk, planName = null) {
         // Pasar siempre planName en código nuevo.
         const pData = (promoConfig.planes || []).find(p => p.servicios.some(s => s.nombre === svcName));
         svc = pData?.servicios.find(s => s.nombre === svcName);
+        ownerPlanName = pData?.nombre || null;
     }
     if (!svc) return false;
     if (!svc.requiereHabilitacion) return true;
-    if (state.habilitaciones?.[dk]?.[svcName] !== false && state.habilitaciones?.[dk]?.[svcName] !== undefined) return true;
+    // 🧭 B7: lectura por plan ("svc@@plan") con fallback a la clave legacy pre-migración
+    const dia = state.habilitaciones?.[dk] || {};
+    const val = (ownerPlanName && dia[`${svcName}@@${ownerPlanName}`] !== undefined)
+        ? dia[`${svcName}@@${ownerPlanName}`]
+        : dia[svcName];
+    if (val !== false && val !== undefined) return true;
     if (svcName === 'Pediatría' && state.pedWhitelist?.[dk] !== false && state.pedWhitelist?.[dk] !== undefined) return true;
     return false;
 }
@@ -2217,10 +2265,19 @@ function isServiceEnabledOnDate(svcName, dk, planName = null) {
  * @param {string} dk - dateKey
  * @returns {number}
  */
-function getPlazasForDay(svc, dk) {
-    if (svc.requiereHabilitacion && state.habilitaciones && state.habilitaciones[dk] && state.habilitaciones[dk][svc.nombre] !== undefined && state.habilitaciones[dk][svc.nombre] !== false) {
-        let val = state.habilitaciones[dk][svc.nombre];
-        if (typeof val === 'number') return val;
+function getPlazasForDay(svc, dk, planName = null) {
+    if (svc.requiereHabilitacion && state.habilitaciones && state.habilitaciones[dk]) {
+        // 🧭 B7: resolver el plan dueño del servicio — por parámetro, por identidad del
+        // objeto de config, o por nombre (primer plan que lo tenga) como último recurso.
+        const ownerPlanName = planName
+            || (promoConfig.planes || []).find(p => (p.servicios || []).includes(svc))?.nombre
+            || (promoConfig.planes || []).find(p => (p.servicios || []).some(s => s.nombre === svc.nombre))?.nombre
+            || null;
+        const dia = state.habilitaciones[dk];
+        const val = (ownerPlanName && dia[`${svc.nombre}@@${ownerPlanName}`] !== undefined)
+            ? dia[`${svc.nombre}@@${ownerPlanName}`]
+            : dia[svc.nombre];
+        if (val !== undefined && val !== false && typeof val === 'number') return val;
     }
     return svc.plazasPorDia >= 0 ? svc.plazasPorDia : 1;
 }
@@ -2448,7 +2505,9 @@ function renderMainCalendar() {
         assigned.forEach(u => {
             html += `<div class="shift-badge" style="background:${svc.color};">👤 ${getInitials(u)}</div>`;
         });
-        const pd = getPlazasForDay(svc, dateKey);
+        // 🧭 B7: plan explícito — los objetos de getAllUniqueServices pertenecen por
+        // identidad al primer plan con ese nombre, no necesariamente al visualizado
+        const pd = getPlazasForDay(svc, dateKey, planVistaCtx ? planVistaCtx.planName : null);
         if (pd > 1) {
             const filled = Object.keys(dayShifts || {}).filter(u =>
                 dayShifts[u] === svc.nombre && esTitularVisibleEnPlan(u, svc.nombre, planVistaCtx)).length;
@@ -3579,6 +3638,38 @@ function renderAdminCalendar() {
     }
     selectTool.onchange = renderAdminCalendar; // Hacer reactivo al cambiar de pincel
 
+    // 🧨 Borrado total del mes (todas las habilitaciones + festivos): exclusivo del admin
+    if (isAdmin && !document.getElementById('admin-nuke-btn')) {
+        selectTool.insertAdjacentHTML('afterend', `<button id="admin-nuke-btn" class="danger" style="padding:6px 10px; font-size:0.8rem; margin-left:6px;" onclick="adminBorrarMesCompleto(curDate.getFullYear(), curDate.getMonth())">🧨 Borrar mes entero</button>`);
+    }
+
+    // 🧭 N3: panel de patrón automático del pincel de habilitación activo
+    let patronPanel = document.getElementById('patron-panel');
+    if (!patronPanel) {
+        patronPanel = document.createElement('div');
+        patronPanel.id = 'patron-panel';
+        patronPanel.style.cssText = 'flex-basis:100%; margin-top:8px;';
+        document.getElementById('aview-calendario').appendChild(patronPanel);
+    }
+    patronPanel.style.display = 'none';
+    if (currentVal.startsWith('svc_')) {
+        const _pp = currentVal.replace('svc_', '').split('_');
+        const _svcNP = _pp[0], _planNP = _pp[1];
+        if (puedeGestionarPlan(_planNP, y, m)) {
+            const _svcCfgP = getSvcConfig(_svcNP, _planNP);
+            patronPanel.innerHTML = `
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:8px; background:white; border:1px dashed #cbd5e1; border-radius:6px;">
+                    <label style="font-size:0.8rem; font-weight:bold; color:#475569;">⚙️ Patrón automático:</label>
+                    <input type="text" id="patron-input" placeholder="Ej: L,X,V | M,J" value="${patronToText(_svcCfgP?.patron_automatico)}" style="margin:0; padding:5px; font-size:0.85rem; flex:1; min-width:160px; border:1px solid #cbd5e1; border-radius:5px;">
+                    <button class="primary" style="padding:5px 10px; font-size:0.8rem;" onclick="guardarPatronServicio('${_svcNP}', '${_planNP}')">💾 Guardar patrón</button>
+                    <button class="primary" style="padding:5px 10px; font-size:0.8rem; background:var(--dark); color:white;" onclick="ejecutarGeneracionPatron('${_svcNP}', '${_planNP}', ${y}, ${m})">✨ Generar huecos del mes</button>
+                    <button class="danger" style="padding:5px 10px; font-size:0.8rem;" onclick="limpiarHabilitacionesMes('${_svcNP}', '${_planNP}', ${y}, ${m})">🧹 Limpiar mes (este pincel)</button>
+                    <span style="flex-basis:100%; font-size:0.72rem; color:#94a3b8;">Semanas separadas por "|" (alternan cíclicamente desde la semana del día 1); días por comas: L,M,X,J,V,S,D. La generación usa las plazas por defecto del servicio y NO pisa los días ya pintados a mano — el resultado se edita con el pincel como siempre. "Limpiar mes" borra lo pintado de este pincel; los días establecidos por un admin quedan protegidos (solo un admin puede borrarlos).</span>
+                </div>`;
+            patronPanel.style.display = 'block';
+        }
+    }
+
     
     // 2. Pintado del calendario
     for(let i=0; i<getFirstDayOffset(y,m); i++) grid.innerHTML += `<div class="cal-cell empty"></div>`;
@@ -3628,17 +3719,22 @@ function renderAdminCalendar() {
                     // LONG PRESS: Custom value
                     if (!state.habilitaciones) state.habilitaciones = {};
                     if (!state.habilitaciones[dateKey]) state.habilitaciones[dateKey] = {};
-                    
-                    const current = state.habilitaciones[dateKey][svcName];
+
+                    // 🧭 B7: las escrituras van SIEMPRE a la clave por plan
+                    const habKey = `${svcName}@@${planName}`;
+                    const current = state.habilitaciones[dateKey][habKey] !== undefined
+                        ? state.habilitaciones[dateKey][habKey]
+                        : state.habilitaciones[dateKey][svcName];
                     let num = prompt("Introduce el número de plazas PERSONALIZADO para este día (o 0 para ilimitado, o deja vacío para cancelar):", typeof current === 'number' ? current : (targetSvc ? targetSvc.plazasPorDia : 1));
                     if (num === null || num.trim() === '') return;
-                    
+
                     let parsed = parseInt(num, 10);
                     if (!isNaN(parsed) && parsed >= 0) {
-                        state.habilitaciones[dateKey][svcName] = parsed;
+                        state.habilitaciones[dateKey][habKey] = parsed;
+                        _marcarOrigenHabilitacion(dateKey, habKey);
                     }
-                    
-                    if (svcName === 'Pediatría') state.pedWhitelist[dateKey] = state.habilitaciones[dateKey][svcName] !== false;
+
+                    if (svcName === 'Pediatría') state.pedWhitelist[dateKey] = state.habilitaciones[dateKey][habKey] !== false;
                     
                     saveState(); 
                     renderAdminCalendar();
@@ -3658,13 +3754,18 @@ function renderAdminCalendar() {
 
                 if (!state.habilitaciones) state.habilitaciones = {};
                 if (!state.habilitaciones[dateKey]) state.habilitaciones[dateKey] = {};
-                
-                const actual = state.habilitaciones[dateKey][svcName];
+
+                // 🧭 B7: las escrituras van SIEMPRE a la clave por plan (lectura con fallback legacy)
+                const habKey = `${svcName}@@${planName}`;
+                const actual = state.habilitaciones[dateKey][habKey] !== undefined
+                    ? state.habilitaciones[dateKey][habKey]
+                    : state.habilitaciones[dateKey][svcName];
                 const currentlyEnabled = actual !== undefined && actual !== false;
-                
-                state.habilitaciones[dateKey][svcName] = currentlyEnabled ? false : (targetSvc ? targetSvc.plazasPorDia : 1);
-                
-                if (svcName === 'Pediatría') state.pedWhitelist[dateKey] = !!state.habilitaciones[dateKey][svcName];
+
+                state.habilitaciones[dateKey][habKey] = currentlyEnabled ? false : (targetSvc ? targetSvc.plazasPorDia : 1);
+                _marcarOrigenHabilitacion(dateKey, habKey);
+
+                if (svcName === 'Pediatría') state.pedWhitelist[dateKey] = !!state.habilitaciones[dateKey][habKey];
                 
                 saveState(); 
                 renderAdminCalendar(); 
@@ -3678,6 +3779,163 @@ function renderAdminCalendar() {
         }
         grid.appendChild(cell);
     }
+}
+
+// ============================================================
+// MÓDULO: PATRON_HUECOS (N3 — sub-sección de ADMIN_CALENDARIO)
+// Exportar a: src/modules/adminCalendario.js  ← mismo archivo
+// Dependencias externas: promoConfig, state.habilitaciones, supabaseClient
+// Helpers que usa: getSvcConfig, puedeGestionarPlan, getFirstDayOffset, getDaysInMonth,
+//                  formatDateKey, saveState, renderAdminCalendar
+// ============================================================
+/**
+ * Registra la procedencia de una habilitación recién escrita: si la escribe un admin,
+ * el día queda marcado como "de admin" (prioritario: el borrado masivo de un delegado
+ * no lo toca); si la escribe un delegado, se retira la marca (el último escritor manda).
+ * Nota: los días pintados ANTES de existir este registro no tienen marca.
+ */
+function _marcarOrigenHabilitacion(dk, habKey) {
+    if (!state.habilitacionesAdmin) state.habilitacionesAdmin = {};
+    if (isAdmin) {
+        if (!state.habilitacionesAdmin[dk]) state.habilitacionesAdmin[dk] = {};
+        state.habilitacionesAdmin[dk][habKey] = true;
+    } else if (state.habilitacionesAdmin[dk]?.[habKey]) {
+        delete state.habilitacionesAdmin[dk][habKey];
+    }
+}
+
+/**
+ * 🧹 Borra de golpe todo lo pintado del pincel activo (svc@@plan) en el mes visible.
+ * Los días marcados como "de admin" solo los borra un admin; para el delegado quedan
+ * protegidos y se informa de cuántos se han respetado.
+ */
+async function limpiarHabilitacionesMes(svcName, planName, y, m) {
+    if (!puedeGestionarPlan(planName, y, m)) return alert('⚠️ Solo puedes limpiar habilitaciones de tu propio plan.');
+    const habKey = `${svcName}@@${planName}`;
+    if (!confirm(`🧹 ¿Borrar TODO lo pintado de ${svcName} (${planName}) en ${MONTHS[m]} ${y}?\n\n${isAdmin ? 'Como admin, se borran también los días marcados por admin.' : 'Los días establecidos por un admin quedarán protegidos y no se borrarán.'}`)) return;
+    let borrados = 0, protegidos = 0;
+    for (let d = 1; d <= getDaysInMonth(y, m); d++) {
+        const dk = formatDateKey(y, m, d);
+        const dia = state.habilitaciones?.[dk];
+        if (!dia || dia[habKey] === undefined) continue;
+        if (!isAdmin && state.habilitacionesAdmin?.[dk]?.[habKey]) { protegidos++; continue; }
+        delete dia[habKey];
+        if (state.habilitacionesAdmin?.[dk]?.[habKey]) delete state.habilitacionesAdmin[dk][habKey];
+        if (svcName === 'Pediatría' && state.pedWhitelist) delete state.pedWhitelist[dk];
+        if (Object.keys(dia).length === 0) delete state.habilitaciones[dk];
+        borrados++;
+    }
+    if (borrados === 0 && protegidos === 0) return alert('No había nada pintado de este pincel en el mes.');
+    await saveState();
+    renderAdminCalendar();
+    alert(`🧹 ${borrados} día(s) borrados de ${svcName} (${planName}).${protegidos > 0 ? `\n🛡️ ${protegidos} día(s) establecidos por admin quedaron protegidos.` : ''}`);
+}
+
+/**
+ * 🧨 Borrado total del mes visible (SOLO ADMIN): todas las habilitaciones de todos los
+ * planes, sus marcas de procedencia, la pedWhitelist legacy y los festivos del mes.
+ */
+async function adminBorrarMesCompleto(y, m) {
+    if (!isAdmin) return alert('⚠️ El borrado total del mes es exclusivo del admin (afecta a todos los planes y a los festivos).');
+    if (!confirm(`🧨 ¿Borrar TODAS las habilitaciones (todos los planes) y los FESTIVOS de ${MONTHS[m]} ${y}?`)) return;
+    if (prompt('Escribe BORRAR en mayúsculas para confirmar:') !== 'BORRAR') return;
+    let dias = 0;
+    for (let d = 1; d <= getDaysInMonth(y, m); d++) {
+        const dk = formatDateKey(y, m, d);
+        let tocado = false;
+        if (state.habilitaciones?.[dk]) { delete state.habilitaciones[dk]; tocado = true; }
+        if (state.habilitacionesAdmin?.[dk]) delete state.habilitacionesAdmin[dk];
+        if (state.pedWhitelist?.[dk] !== undefined) { delete state.pedWhitelist[dk]; tocado = true; }
+        if (state.festivos?.[dk]) { delete state.festivos[dk]; tocado = true; }
+        if (tocado) dias++;
+    }
+    if (dias === 0) return alert('El mes ya estaba limpio.');
+    await saveState();
+    renderAll();
+    alert(`🧨 Mes ${MONTHS[m]} ${y} limpiado: ${dias} día(s) con datos borrados (habilitaciones de todos los planes + festivos).`);
+}
+
+/** Serializa patron_automatico a texto editable: [['L','X','V'],['M','J']] → "L,X,V | M,J". */
+function patronToText(patron) {
+    return (patron || []).map(sem => sem.join(',')).join(' | ');
+}
+
+/**
+ * Parsea el texto del patrón ("L,X,V | M,J") a array de semanas [['L','X','V'],['M','J']].
+ * @returns {string[][]|null} null si contiene días inválidos; [] si está vacío
+ */
+function parsePatronText(txt) {
+    if (!txt || !txt.trim()) return [];
+    const validas = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
+    const semanas = txt.split('|').map(s => s.split(',').map(x => x.trim().toUpperCase()).filter(Boolean));
+    for (const sem of semanas) {
+        for (const l of sem) if (!validas.includes(l)) return null;
+    }
+    return semanas.filter(s => s.length > 0);
+}
+
+/** Guarda el patrón del panel en la config del servicio (promociones.configuracion). */
+async function guardarPatronServicio(svcName, planName) {
+    const _y = curDate.getFullYear(), _m = curDate.getMonth();
+    if (!puedeGestionarPlan(planName, _y, _m)) return alert('⚠️ Solo puedes configurar patrones de tu propio plan.');
+    const input = document.getElementById('patron-input');
+    if (!input) return;
+    const patron = parsePatronText(input.value);
+    if (patron === null) return alert('⚠️ Patrón inválido. Usa días L,M,X,J,V,S,D separados por comas y semanas separadas por "|". Ej: L,X,V | M,J');
+    const svc = getSvcConfig(svcName, planName);
+    if (!svc) return alert('No se encontró el servicio en la configuración.');
+    svc.patron_automatico = patron;
+    svc.modo_calendario = patron.length > 0 ? 'patron' : 'manual';
+    setStatus('Guardando patrón...');
+    const { error } = await supabaseClient.from('promociones').update({ configuracion: promoConfig }).eq('id', currentUserProfile.promocion_id);
+    if (error) { setStatus('Error ❌', true); return alert('Error al guardar el patrón: ' + error.message); }
+    setStatus('Conectado ✅');
+    alert(patron.length > 0 ? '✅ Patrón guardado para ' + svcName + ' (' + planName + ').' : 'Patrón vaciado: el servicio vuelve a modo manual.');
+    renderAdminCalendar();
+}
+
+/**
+ * Genera habilitaciones del mes desde el patrón del servicio (claves svc@@plan, B7).
+ * Las semanas del patrón alternan cíclicamente empezando por la semana que contiene
+ * el día 1. Solo rellena días SIN valor previo: lo pintado/despintado a mano se respeta.
+ * @returns {number} número de días generados
+ */
+function generarHuecosDesdePatron(svcName, planName, y, m) {
+    const svc = getSvcConfig(svcName, planName);
+    if (!svc || !svc.patron_automatico || svc.patron_automatico.length === 0) return -1;
+    const habKey = `${svcName}@@${planName}`;
+    const off = getFirstDayOffset(y, m); // 0 = el mes empieza en lunes
+    const LETRAS = ['D', 'L', 'M', 'X', 'J', 'V', 'S'];
+    let count = 0;
+    if (!state.habilitaciones) state.habilitaciones = {};
+    for (let d = 1; d <= getDaysInMonth(y, m); d++) {
+        const semanaIdx = Math.floor((d - 1 + off) / 7);
+        const semana = svc.patron_automatico[semanaIdx % svc.patron_automatico.length] || [];
+        if (!semana.includes(LETRAS[new Date(y, m, d).getDay()])) continue;
+        const dk = formatDateKey(y, m, d);
+        if (!state.habilitaciones[dk]) state.habilitaciones[dk] = {};
+        if (state.habilitaciones[dk][habKey] === undefined) {
+            state.habilitaciones[dk][habKey] = svc.plazasPorDia >= 0 ? svc.plazasPorDia : 1;
+            _marcarOrigenHabilitacion(dk, habKey);
+            count++;
+        }
+    }
+    return count;
+}
+
+/** Handler del botón "Generar huecos del mes": valida, confirma, genera y persiste. */
+async function ejecutarGeneracionPatron(svcName, planName, y, m) {
+    if (!puedeGestionarPlan(planName, y, m)) return alert('⚠️ Solo puedes generar huecos de tu propio plan.');
+    const svc = getSvcConfig(svcName, planName);
+    if (!svc || !svc.patron_automatico || svc.patron_automatico.length === 0) {
+        return alert('Este servicio no tiene patrón guardado. Escríbelo en el campo y pulsa "Guardar patrón" primero.');
+    }
+    if (!confirm(`¿Generar los huecos de ${svcName} (${planName}) para ${MONTHS[m]} ${y} según el patrón "${patronToText(svc.patron_automatico)}"?\n\nSolo se rellenarán días sin valor previo.`)) return;
+    const count = generarHuecosDesdePatron(svcName, planName, y, m);
+    if (count <= 0) return alert('No se generó ningún día nuevo (los días del patrón ya estaban definidos a mano).');
+    await saveState();
+    renderAdminCalendar();
+    alert(`✅ ${count} día(s) habilitados para ${svcName} (${planName}) en ${MONTHS[m]} ${y}. Ajusta lo que necesites con el pincel.`);
 }
 
 // ============================================================
@@ -3696,10 +3954,46 @@ function renderAdminExceptions() {
   for (const [u, reason] of Object.entries(pendings)) { pendHtml += `<div style="background:white; border:1px solid #cbd5e1; padding:10px; border-radius:8px; margin-bottom:8px;"><div style="font-weight:bold; margin-bottom:4px; color:var(--dark);">👤 Residente: ${u}</div><div style="font-size:0.85rem; color:#475569; margin-bottom:10px; background:#f1f5f9; padding:6px; border-radius:4px; border-left:3px solid var(--fest);">"${reason}"</div><div style="display:flex; gap:8px;"><button class="primary" style="padding:4px 10px; font-size:0.8rem; background:var(--ped);" onclick="adminApproveException('${u}', '${monthKey}')">✅ Validar y Saltar</button><button class="danger" style="padding:4px 10px; font-size:0.8rem;" onclick="adminRejectException('${u}', '${monthKey}')">❌ Rechazar</button></div></div>`; }
   if (!pendHtml) pendHtml = '<p style="font-size:0.85rem; color:#64748b;">No hay solicitudes pendientes.</p>'; pendList.innerHTML = pendHtml;
   const rList = document.getElementById('admin-reasons-list'); rList.innerHTML = (state.exceptionReasons || []).map((r, i) => `<div class="editor-row" style="justify-content:space-between; border-bottom:1px solid #e2e8f0; padding:6px 0;"><span style="color:#475569; font-size:0.9rem;">${r}</span><button class="danger icon-btn" style="padding:2px 6px; font-size:0.8rem;" onclick="adminRemoveExceptionReason(${i})">Borrar</button></div>`).join('');
+
+  // 🕳️ N2: Huecos sin candidato válido del mes visible (evidencia de sobrecarga)
+  let hscPanel = document.getElementById('huecos-sin-candidato-panel');
+  if (!hscPanel) {
+      hscPanel = document.createElement('div');
+      hscPanel.id = 'huecos-sin-candidato-panel';
+      hscPanel.className = 'rot-group';
+      document.getElementById('aview-excepciones')?.appendChild(hscPanel);
+  }
+  const registrosHSC = (state.huecosSinCandidato || []).filter(r => r.mk === monthKey);
+  let hscHtml = `<h4 style="margin:0; margin-bottom:1rem;">🕳️ Huecos sin candidato válido — ${MONTHS[m]} ${y}</h4>`;
+  if (registrosHSC.length === 0) {
+      hscHtml += `<p style="font-size:0.85rem; color:#64748b;">Sin registros este mes. Cuando una asignación forzosa no encuentre candidato legal para un hueco, la evidencia (fecha, servicio y por qué se descartó cada residente) quedará guardada aquí.</p>`;
+  } else {
+      registrosHSC.forEach(r => {
+          const idxGlobal = state.huecosSinCandidato.indexOf(r);
+          const cands = (r.candidatos || []).map(c => `<li style="font-size:0.78rem; color:#64748b;"><b>${c.n}</b>: ${c.motivo}</li>`).join('');
+          hscHtml += `<div style="background:#fef2f2; border:1px solid #fecaca; border-radius:8px; padding:10px; margin-bottom:8px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+                  <span style="font-size:0.9rem;">🔴 <b>${formatDK(r.dk)}</b> — ${r.svc}${r.plan ? ` <span style="font-size:0.75rem; color:#94a3b8;">(${r.plan})</span>` : ''} <span style="font-size:0.72rem; color:#94a3b8;">· ${r.origen} · ${r.ts}</span></span>
+                  ${isAdmin ? `<button class="danger icon-btn" style="padding:2px 6px; font-size:0.8rem;" onclick="adminBorrarHuecoSinCandidato(${idxGlobal})">🗑️</button>` : ''}
+              </div>
+              ${cands ? `<details style="margin-top:6px;"><summary style="font-size:0.78rem; cursor:pointer; color:#991b1b;">Candidatos evaluados (${(r.candidatos || []).length})</summary><ul style="margin:6px 0 0 16px;">${cands}</ul></details>` : ''}
+          </div>`;
+      });
+  }
+  hscPanel.innerHTML = hscHtml;
   const lList = document.getElementById('admin-logs-list'); if (!state.exceptionLogs || state.exceptionLogs.length === 0) { lList.innerHTML = "<p style='font-size:0.85rem; color:#64748b;'>Sin registros.</p>"; } else { lList.innerHTML = state.exceptionLogs.slice().reverse().map((l, revIdx) => { const origIdx = state.exceptionLogs.length - 1 - revIdx; return `<div style="background:#f1f5f9; padding:10px; border-radius:8px; margin-bottom:8px; font-size:0.85rem; border:1px solid #e2e8f0;"><div style="display:flex; justify-content:space-between; margin-bottom:4px;"><strong>👤 ${l.user}</strong><div><span style="color:#94a3b8; font-size:0.75rem; margin-right:8px;">🗓️ ${l.timestamp}</span><button class="danger icon-btn" style="padding:2px 6px; font-size:0.7rem;" onclick="adminDeleteLog(${origIdx})">Borrar</button></div></div><div>Mes: <b>${l.monthStr}</b></div><div style="color:var(--fest);">Motivo: <b>${l.reason}</b></div><div style="color:#475569; font-style:italic;">Retenidas: ${l.shiftsSummary}</div></div>`}).join(''); }
 }
 /** Elimina una entrada del log de excepciones por su índice. */
 async function adminDeleteLog(idx) { if (!confirm("¿Borrar?")) return; state.exceptionLogs.splice(idx, 1); await saveState(); renderAdminExceptions(); }
+/** 🕳️ N2: elimina un registro de hueco sin candidato (solo admin, por errores de registro — PRD §13.2). */
+async function adminBorrarHuecoSinCandidato(idx) {
+    if (!isAdmin) return alert('⚠️ Solo el admin puede borrar registros del histórico.');
+    if (!confirm('¿Borrar este registro de hueco sin candidato?')) return;
+    if (!state.huecosSinCandidato || !state.huecosSinCandidato[idx]) return;
+    state.huecosSinCandidato.splice(idx, 1);
+    await saveState();
+    renderAdminExceptions();
+}
 /** Valida la solicitud de excepción del residente y le salta el turno automáticamente. */
 async function adminApproveException(u, monthKey) { if(!confirm(`¿Validar?`)) return; const reason = state.pendingExceptions[monthKey][u]; const [yStr, mStr] = monthKey.split('_'); const y = parseInt(yStr, 10), m = parseInt(mStr, 10); let chosenShifts = []; for(let d=1; d<=getDaysInMonth(y, m); d++) { const dk = formatDateKey(y, m, d); if (state.shifts[dk] && state.shifts[dk][u]) chosenShifts.push(`Día ${d} (${state.shifts[dk][u]})`); } const shiftsSummary = chosenShifts.length > 0 ? chosenShifts.join(', ') : 'Ninguna'; if (!state.exceptionLogs) state.exceptionLogs = []; state.exceptionLogs.push({ user: u, monthStr: `${MONTHS[m]} ${y}`, reason: `(Validado) Otros: ${reason}`, shiftsSummary: shiftsSummary, timestamp: new Date().toLocaleString('es-ES') }); if (!state.skippedTurns[monthKey]) state.skippedTurns[monthKey] = []; if (!state.skippedTurns[monthKey].includes(u)) state.skippedTurns[monthKey].push(u); delete state.pendingExceptions[monthKey][u]; await saveState(); checkAutomaticGraduation();
     renderAll(); }
@@ -4935,6 +5229,31 @@ async /**
  * @param {number} m - 0-indexed
  * @param {string} targetSvcNombre - nombre del servicio a cubrir
  */
+/**
+ * 🕳️ N2 — Registra de forma persistente un hueco que la asignación forzosa no pudo
+ * cubrir: fecha, servicio, plan, candidatos evaluados con su motivo de descarte y
+ * origen del evento. Es la evidencia de exceso de carga asistencial (PRD §15/§8.4).
+ * Visible en Admin → Excepciones. Cap de 300 entradas (se conservan las más recientes).
+ * @param {string} dk
+ * @param {string} svcNombre
+ * @param {string} planNombre
+ * @param {number} y
+ * @param {number} m - 0-indexed
+ * @param {{n: string, motivo: string}[]} candidatosEvaluados
+ * @param {string} origen - 'forzosa' | 'propuesta' (N5) | ...
+ */
+function registrarHuecoSinCandidato(dk, svcNombre, planNombre, y, m, candidatosEvaluados, origen) {
+    if (!state.huecosSinCandidato) state.huecosSinCandidato = [];
+    state.huecosSinCandidato.push({
+        dk, svc: svcNombre, plan: planNombre, mk: getRotationKey(y, m),
+        candidatos: candidatosEvaluados || [], origen,
+        ts: new Date().toLocaleString('es-ES')
+    });
+    if (state.huecosSinCandidato.length > 300) {
+        state.huecosSinCandidato = state.huecosSinCandidato.slice(-300);
+    }
+}
+
 async function ejecutarAsignacionForzosa(y, m, targetSvcNombre) {
     const _pvForz = getCurrentRotPlan(formatDateKey(y, m, 1));
     if (!puedeGestionarPlan(_pvForz, y, m)) return alert('⚠️ Solo puedes forzar asignaciones de tu propio plan de guardias.');
@@ -5000,16 +5319,21 @@ async function ejecutarAsignacionForzosa(y, m, targetSvcNombre) {
     for (let hIdx = 0; hIdx < huecosLibres.length; hIdx++) {
         const hueco = huecosLibres[hIdx];
         let asignado = false;
+        const motivosHueco = []; // 🕳️ N2: por qué se descartó cada candidato de este hueco
 
         for (let c = 0; c < candidatos.length; c++) {
             const residente = candidatos[c];
-            if (state.shifts[hueco.dk]?.[residente]) continue; // ya cubre este día
+            if (state.shifts[hueco.dk]?.[residente]) {
+                motivosHueco.push({ n: residente, motivo: 'Ya tiene guardia ese día' });
+                continue;
+            }
 
             const projected = JSON.parse(JSON.stringify(state.shifts || {}));
             if (!projected[hueco.dk]) projected[hueco.dk] = {};
             projected[hueco.dk][residente] = hueco.svc;
 
-            if (getIllegalShiftsForUser(residente, projected).length === 0) {
+            const conflictos = getIllegalShiftsForUser(residente, projected);
+            if (conflictos.length === 0) {
                 if (!state.shifts[hueco.dk]) state.shifts[hueco.dk] = {};
                 state.shifts[hueco.dk][residente] = hueco.svc;
                 asignacionesLog.push(`${residente} → ${hueco.svc} (${formatDK(hueco.dk)})`);
@@ -5020,14 +5344,19 @@ async function ejecutarAsignacionForzosa(y, m, targetSvcNombre) {
                 candidatos.push(candidatos.splice(c, 1)[0]); // rotación fairness
                 asignado = true;
                 break;
-            } else if (nominadosSet.has(residente)) {
-                // Nominado bloqueado por conflicto de descanso (saliente/entrante)
-                nominadosBloqueados.add(residente);
+            } else {
+                motivosHueco.push({ n: residente, motivo: `Descanso: ${conflictos[0] || 'conflicto saliente/entrante'}` });
+                if (nominadosSet.has(residente)) {
+                    // Nominado bloqueado por conflicto de descanso (saliente/entrante)
+                    nominadosBloqueados.add(residente);
+                }
             }
         }
 
         if (!asignado) {
             huecosImpossibles.push(`${hueco.svc} (${formatDK(hueco.dk)})`);
+            // 🕳️ N2: la evidencia de sobrecarga se persiste (antes moría en el alert)
+            registrarHuecoSinCandidato(hueco.dk, hueco.svc, analisis.planNombre || '', y, m, motivosHueco, 'forzosa');
         }
     }
 
