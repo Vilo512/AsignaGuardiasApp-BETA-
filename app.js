@@ -3638,6 +3638,11 @@ function renderAdminCalendar() {
     }
     selectTool.onchange = renderAdminCalendar; // Hacer reactivo al cambiar de pincel
 
+    // 🧨 Borrado total del mes (todas las habilitaciones + festivos): exclusivo del admin
+    if (isAdmin && !document.getElementById('admin-nuke-btn')) {
+        selectTool.insertAdjacentHTML('afterend', `<button id="admin-nuke-btn" class="danger" style="padding:6px 10px; font-size:0.8rem; margin-left:6px;" onclick="adminBorrarMesCompleto(curDate.getFullYear(), curDate.getMonth())">🧨 Borrar mes entero</button>`);
+    }
+
     // 🧭 N3: panel de patrón automático del pincel de habilitación activo
     let patronPanel = document.getElementById('patron-panel');
     if (!patronPanel) {
@@ -3658,7 +3663,8 @@ function renderAdminCalendar() {
                     <input type="text" id="patron-input" placeholder="Ej: L,X,V | M,J" value="${patronToText(_svcCfgP?.patron_automatico)}" style="margin:0; padding:5px; font-size:0.85rem; flex:1; min-width:160px; border:1px solid #cbd5e1; border-radius:5px;">
                     <button class="primary" style="padding:5px 10px; font-size:0.8rem;" onclick="guardarPatronServicio('${_svcNP}', '${_planNP}')">💾 Guardar patrón</button>
                     <button class="primary" style="padding:5px 10px; font-size:0.8rem; background:var(--dark); color:white;" onclick="ejecutarGeneracionPatron('${_svcNP}', '${_planNP}', ${y}, ${m})">✨ Generar huecos del mes</button>
-                    <span style="flex-basis:100%; font-size:0.72rem; color:#94a3b8;">Semanas separadas por "|" (alternan cíclicamente desde la semana del día 1); días por comas: L,M,X,J,V,S,D. La generación usa las plazas por defecto del servicio y NO pisa los días ya pintados a mano — el resultado se edita con el pincel como siempre.</span>
+                    <button class="danger" style="padding:5px 10px; font-size:0.8rem;" onclick="limpiarHabilitacionesMes('${_svcNP}', '${_planNP}', ${y}, ${m})">🧹 Limpiar mes (este pincel)</button>
+                    <span style="flex-basis:100%; font-size:0.72rem; color:#94a3b8;">Semanas separadas por "|" (alternan cíclicamente desde la semana del día 1); días por comas: L,M,X,J,V,S,D. La generación usa las plazas por defecto del servicio y NO pisa los días ya pintados a mano — el resultado se edita con el pincel como siempre. "Limpiar mes" borra lo pintado de este pincel; los días establecidos por un admin quedan protegidos (solo un admin puede borrarlos).</span>
                 </div>`;
             patronPanel.style.display = 'block';
         }
@@ -3725,6 +3731,7 @@ function renderAdminCalendar() {
                     let parsed = parseInt(num, 10);
                     if (!isNaN(parsed) && parsed >= 0) {
                         state.habilitaciones[dateKey][habKey] = parsed;
+                        _marcarOrigenHabilitacion(dateKey, habKey);
                     }
 
                     if (svcName === 'Pediatría') state.pedWhitelist[dateKey] = state.habilitaciones[dateKey][habKey] !== false;
@@ -3756,6 +3763,7 @@ function renderAdminCalendar() {
                 const currentlyEnabled = actual !== undefined && actual !== false;
 
                 state.habilitaciones[dateKey][habKey] = currentlyEnabled ? false : (targetSvc ? targetSvc.plazasPorDia : 1);
+                _marcarOrigenHabilitacion(dateKey, habKey);
 
                 if (svcName === 'Pediatría') state.pedWhitelist[dateKey] = !!state.habilitaciones[dateKey][habKey];
                 
@@ -3780,6 +3788,73 @@ function renderAdminCalendar() {
 // Helpers que usa: getSvcConfig, puedeGestionarPlan, getFirstDayOffset, getDaysInMonth,
 //                  formatDateKey, saveState, renderAdminCalendar
 // ============================================================
+/**
+ * Registra la procedencia de una habilitación recién escrita: si la escribe un admin,
+ * el día queda marcado como "de admin" (prioritario: el borrado masivo de un delegado
+ * no lo toca); si la escribe un delegado, se retira la marca (el último escritor manda).
+ * Nota: los días pintados ANTES de existir este registro no tienen marca.
+ */
+function _marcarOrigenHabilitacion(dk, habKey) {
+    if (!state.habilitacionesAdmin) state.habilitacionesAdmin = {};
+    if (isAdmin) {
+        if (!state.habilitacionesAdmin[dk]) state.habilitacionesAdmin[dk] = {};
+        state.habilitacionesAdmin[dk][habKey] = true;
+    } else if (state.habilitacionesAdmin[dk]?.[habKey]) {
+        delete state.habilitacionesAdmin[dk][habKey];
+    }
+}
+
+/**
+ * 🧹 Borra de golpe todo lo pintado del pincel activo (svc@@plan) en el mes visible.
+ * Los días marcados como "de admin" solo los borra un admin; para el delegado quedan
+ * protegidos y se informa de cuántos se han respetado.
+ */
+async function limpiarHabilitacionesMes(svcName, planName, y, m) {
+    if (!puedeGestionarPlan(planName, y, m)) return alert('⚠️ Solo puedes limpiar habilitaciones de tu propio plan.');
+    const habKey = `${svcName}@@${planName}`;
+    if (!confirm(`🧹 ¿Borrar TODO lo pintado de ${svcName} (${planName}) en ${MONTHS[m]} ${y}?\n\n${isAdmin ? 'Como admin, se borran también los días marcados por admin.' : 'Los días establecidos por un admin quedarán protegidos y no se borrarán.'}`)) return;
+    let borrados = 0, protegidos = 0;
+    for (let d = 1; d <= getDaysInMonth(y, m); d++) {
+        const dk = formatDateKey(y, m, d);
+        const dia = state.habilitaciones?.[dk];
+        if (!dia || dia[habKey] === undefined) continue;
+        if (!isAdmin && state.habilitacionesAdmin?.[dk]?.[habKey]) { protegidos++; continue; }
+        delete dia[habKey];
+        if (state.habilitacionesAdmin?.[dk]?.[habKey]) delete state.habilitacionesAdmin[dk][habKey];
+        if (svcName === 'Pediatría' && state.pedWhitelist) delete state.pedWhitelist[dk];
+        if (Object.keys(dia).length === 0) delete state.habilitaciones[dk];
+        borrados++;
+    }
+    if (borrados === 0 && protegidos === 0) return alert('No había nada pintado de este pincel en el mes.');
+    await saveState();
+    renderAdminCalendar();
+    alert(`🧹 ${borrados} día(s) borrados de ${svcName} (${planName}).${protegidos > 0 ? `\n🛡️ ${protegidos} día(s) establecidos por admin quedaron protegidos.` : ''}`);
+}
+
+/**
+ * 🧨 Borrado total del mes visible (SOLO ADMIN): todas las habilitaciones de todos los
+ * planes, sus marcas de procedencia, la pedWhitelist legacy y los festivos del mes.
+ */
+async function adminBorrarMesCompleto(y, m) {
+    if (!isAdmin) return alert('⚠️ El borrado total del mes es exclusivo del admin (afecta a todos los planes y a los festivos).');
+    if (!confirm(`🧨 ¿Borrar TODAS las habilitaciones (todos los planes) y los FESTIVOS de ${MONTHS[m]} ${y}?`)) return;
+    if (prompt('Escribe BORRAR en mayúsculas para confirmar:') !== 'BORRAR') return;
+    let dias = 0;
+    for (let d = 1; d <= getDaysInMonth(y, m); d++) {
+        const dk = formatDateKey(y, m, d);
+        let tocado = false;
+        if (state.habilitaciones?.[dk]) { delete state.habilitaciones[dk]; tocado = true; }
+        if (state.habilitacionesAdmin?.[dk]) delete state.habilitacionesAdmin[dk];
+        if (state.pedWhitelist?.[dk] !== undefined) { delete state.pedWhitelist[dk]; tocado = true; }
+        if (state.festivos?.[dk]) { delete state.festivos[dk]; tocado = true; }
+        if (tocado) dias++;
+    }
+    if (dias === 0) return alert('El mes ya estaba limpio.');
+    await saveState();
+    renderAll();
+    alert(`🧨 Mes ${MONTHS[m]} ${y} limpiado: ${dias} día(s) con datos borrados (habilitaciones de todos los planes + festivos).`);
+}
+
 /** Serializa patron_automatico a texto editable: [['L','X','V'],['M','J']] → "L,X,V | M,J". */
 function patronToText(patron) {
     return (patron || []).map(sem => sem.join(',')).join(' | ');
@@ -3841,6 +3916,7 @@ function generarHuecosDesdePatron(svcName, planName, y, m) {
         if (!state.habilitaciones[dk]) state.habilitaciones[dk] = {};
         if (state.habilitaciones[dk][habKey] === undefined) {
             state.habilitaciones[dk][habKey] = svc.plazasPorDia >= 0 ? svc.plazasPorDia : 1;
+            _marcarOrigenHabilitacion(dk, habKey);
             count++;
         }
     }
