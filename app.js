@@ -928,18 +928,24 @@ function getUserLevelOnDate(userProfile, dateKey) {
     const startParts = userProfile.fecha_inicio_residencia.split('-');
     const startDate = new Date(parseInt(startParts[0]), parseInt(startParts[1]) - 1, parseInt(startParts[2]));
     
-    if (targetDate < startDate) return 0; // Fecha anterior a ser residente
+    const targetVal = targetDate.getFullYear() * 12 + targetDate.getMonth();
+
+    // 🗓️ REGLA MENSUAL (entrada): el mes de inicio de residencia cuenta ENTERO como
+    // primer mes en el plan — quien empieza el 5 de junio pertenece al plan R1 desde
+    // el 1 de junio. Antes se comparaba el día exacto y el residente no existía para
+    // las listas mensuales (que muestrean el día 1) hasta su primer mes completo.
+    const inicioVal = startDate.getFullYear() * 12 + startDate.getMonth();
+    if (targetVal < inicioVal) return 0; // Mes anterior a ser residente
 
     // EL SALVAVIDAS: Si no ha configurado el cambio de contrato, usamos su fecha de inicio
     let savedDate = userProfile.fecha_cambio_contrato || userProfile.fecha_inicio_residencia;
     const cambioParts = savedDate.split('-');
 
-    // 🗓️ REGLA MENSUAL: el nivel/plan nunca cambia a mitad de mes. El mes que contiene
-    // la fecha de cambio de contrato cuenta ENTERO como el nivel nuevo (el posterior):
-    // cambio el 27/05 → todo mayo ya es R2. Se comparan meses completos, no días.
+    // 🗓️ REGLA MENSUAL (cambio): el nivel/plan nunca cambia a mitad de mes. El mes que
+    // contiene la fecha de cambio de contrato cuenta ENTERO como el nivel nuevo (el
+    // posterior): cambio el 27/05 → todo mayo ya es R2. Se comparan meses, no días.
     const cambioMes = parseInt(cambioParts[1], 10) - 1;
     const efectivoVal = targetDate.getFullYear() * 12 + cambioMes;
-    const targetVal = targetDate.getFullYear() * 12 + targetDate.getMonth();
 
     let level = targetDate.getFullYear() - startDate.getFullYear() + 1;
     if (targetVal < efectivoVal) level--; // Aún no ha cruzado su mes de cambio este año
