@@ -35,7 +35,7 @@ Este archivo es la **memoria de trabajo persistente** del Engineering Lead entre
 | W11 | ⚠️ Diverge | §8 | `_getAnalisisFestivosImpl` usaba `getComputedShifts` para contar huecos cubiertos — inconsistente con `state.shifts` en `renderAlertaCargaMensual` y `ejecutarAsignacionForzosa`; mes atascado con "0 guardias" | `resuelto` |
 | N1 | ✅ Hecho | §12 | Sistema de notificaciones in-app completo | `resuelto` |
 | N2 | ❌ Falta | §15 / §8.4 | Registro persistente de huecos sin candidato válido | `pendiente` |
-| N3 | ❌ Falta | §5.1 | Calendario automático de huecos desde patrón configurable | `pendiente` |
+| N3 | ✅ Hecho | §5.1 | Calendario automático de huecos desde patrón configurable | `resuelto` |
 | N4 | ❌ Falta | §4 / D-02 | Importación de festivos desde fuente oficial | `pendiente` |
 | N5 | ❌ Falta | §8.5 / §8.6 | Propuesta de asignación automática (revisión admin antes de ejecutar) + Forzamiento de turno por inactividad | `pendiente` |
 
@@ -681,10 +681,10 @@ Los campos `modo_calendario` y `patron_automatico` existen en el modelo de servi
 **Dependencias posteriores:** Ninguna
 
 ### Resultado
-**Estado final:** `pendiente`  
-**Decisiones tomadas:** —  
-**Efectos secundarios detectados:** —  
-**Archivos modificados:** —
+**Estado final:** `resuelto` (Julio 2026)  
+**Decisiones tomadas:** Esquema de patrón: array de semanas con días L,M,X,J,V,S,D (ej. `[['L','X','V'],['M','J']]`); las semanas alternan cíclicamente empezando por la semana que contiene el día 1 del mes. UI integrada en Admin Calendario como panel bajo el pincel activo (input "L,X,V | M,J" + botones "Guardar patrón" y "Generar huecos del mes"), disponible para admin y para el delegado en su propio plan (`puedeGestionarPlan`). La generación escribe claves por plan `svc@@plan` (esquema B7), usa `plazasPorDia` del servicio y NO pisa días ya definidos a mano (solo rellena `undefined`). `modo_calendario` se marca 'patron'/'manual' al guardar el patrón.  
+**Efectos secundarios detectados:** Los festivos no alteran el patrón (es puramente por día de semana); si un festivo intersemanal requiere tratamiento distinto, se ajusta a mano con el pincel.  
+**Archivos modificados:** `app.js` (patronToText, parsePatronText, guardarPatronServicio, generarHuecosDesdePatron, ejecutarGeneracionPatron y panel en renderAdminCalendar), `index.html` (cache-buster v=2.4)
 
 ---
 

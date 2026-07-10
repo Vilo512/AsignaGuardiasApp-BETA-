@@ -3638,6 +3638,32 @@ function renderAdminCalendar() {
     }
     selectTool.onchange = renderAdminCalendar; // Hacer reactivo al cambiar de pincel
 
+    // 🧭 N3: panel de patrón automático del pincel de habilitación activo
+    let patronPanel = document.getElementById('patron-panel');
+    if (!patronPanel) {
+        patronPanel = document.createElement('div');
+        patronPanel.id = 'patron-panel';
+        patronPanel.style.cssText = 'flex-basis:100%; margin-top:8px;';
+        document.getElementById('aview-calendario').appendChild(patronPanel);
+    }
+    patronPanel.style.display = 'none';
+    if (currentVal.startsWith('svc_')) {
+        const _pp = currentVal.replace('svc_', '').split('_');
+        const _svcNP = _pp[0], _planNP = _pp[1];
+        if (puedeGestionarPlan(_planNP, y, m)) {
+            const _svcCfgP = getSvcConfig(_svcNP, _planNP);
+            patronPanel.innerHTML = `
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:8px; background:white; border:1px dashed #cbd5e1; border-radius:6px;">
+                    <label style="font-size:0.8rem; font-weight:bold; color:#475569;">⚙️ Patrón automático:</label>
+                    <input type="text" id="patron-input" placeholder="Ej: L,X,V | M,J" value="${patronToText(_svcCfgP?.patron_automatico)}" style="margin:0; padding:5px; font-size:0.85rem; flex:1; min-width:160px; border:1px solid #cbd5e1; border-radius:5px;">
+                    <button class="primary" style="padding:5px 10px; font-size:0.8rem;" onclick="guardarPatronServicio('${_svcNP}', '${_planNP}')">💾 Guardar patrón</button>
+                    <button class="primary" style="padding:5px 10px; font-size:0.8rem; background:var(--dark); color:white;" onclick="ejecutarGeneracionPatron('${_svcNP}', '${_planNP}', ${y}, ${m})">✨ Generar huecos del mes</button>
+                    <span style="flex-basis:100%; font-size:0.72rem; color:#94a3b8;">Semanas separadas por "|" (alternan cíclicamente desde la semana del día 1); días por comas: L,M,X,J,V,S,D. La generación usa las plazas por defecto del servicio y NO pisa los días ya pintados a mano — el resultado se edita con el pincel como siempre.</span>
+                </div>`;
+            patronPanel.style.display = 'block';
+        }
+    }
+
     
     // 2. Pintado del calendario
     for(let i=0; i<getFirstDayOffset(y,m); i++) grid.innerHTML += `<div class="cal-cell empty"></div>`;
@@ -3745,6 +3771,95 @@ function renderAdminCalendar() {
         }
         grid.appendChild(cell);
     }
+}
+
+// ============================================================
+// MÓDULO: PATRON_HUECOS (N3 — sub-sección de ADMIN_CALENDARIO)
+// Exportar a: src/modules/adminCalendario.js  ← mismo archivo
+// Dependencias externas: promoConfig, state.habilitaciones, supabaseClient
+// Helpers que usa: getSvcConfig, puedeGestionarPlan, getFirstDayOffset, getDaysInMonth,
+//                  formatDateKey, saveState, renderAdminCalendar
+// ============================================================
+/** Serializa patron_automatico a texto editable: [['L','X','V'],['M','J']] → "L,X,V | M,J". */
+function patronToText(patron) {
+    return (patron || []).map(sem => sem.join(',')).join(' | ');
+}
+
+/**
+ * Parsea el texto del patrón ("L,X,V | M,J") a array de semanas [['L','X','V'],['M','J']].
+ * @returns {string[][]|null} null si contiene días inválidos; [] si está vacío
+ */
+function parsePatronText(txt) {
+    if (!txt || !txt.trim()) return [];
+    const validas = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
+    const semanas = txt.split('|').map(s => s.split(',').map(x => x.trim().toUpperCase()).filter(Boolean));
+    for (const sem of semanas) {
+        for (const l of sem) if (!validas.includes(l)) return null;
+    }
+    return semanas.filter(s => s.length > 0);
+}
+
+/** Guarda el patrón del panel en la config del servicio (promociones.configuracion). */
+async function guardarPatronServicio(svcName, planName) {
+    const _y = curDate.getFullYear(), _m = curDate.getMonth();
+    if (!puedeGestionarPlan(planName, _y, _m)) return alert('⚠️ Solo puedes configurar patrones de tu propio plan.');
+    const input = document.getElementById('patron-input');
+    if (!input) return;
+    const patron = parsePatronText(input.value);
+    if (patron === null) return alert('⚠️ Patrón inválido. Usa días L,M,X,J,V,S,D separados por comas y semanas separadas por "|". Ej: L,X,V | M,J');
+    const svc = getSvcConfig(svcName, planName);
+    if (!svc) return alert('No se encontró el servicio en la configuración.');
+    svc.patron_automatico = patron;
+    svc.modo_calendario = patron.length > 0 ? 'patron' : 'manual';
+    setStatus('Guardando patrón...');
+    const { error } = await supabaseClient.from('promociones').update({ configuracion: promoConfig }).eq('id', currentUserProfile.promocion_id);
+    if (error) { setStatus('Error ❌', true); return alert('Error al guardar el patrón: ' + error.message); }
+    setStatus('Conectado ✅');
+    alert(patron.length > 0 ? '✅ Patrón guardado para ' + svcName + ' (' + planName + ').' : 'Patrón vaciado: el servicio vuelve a modo manual.');
+    renderAdminCalendar();
+}
+
+/**
+ * Genera habilitaciones del mes desde el patrón del servicio (claves svc@@plan, B7).
+ * Las semanas del patrón alternan cíclicamente empezando por la semana que contiene
+ * el día 1. Solo rellena días SIN valor previo: lo pintado/despintado a mano se respeta.
+ * @returns {number} número de días generados
+ */
+function generarHuecosDesdePatron(svcName, planName, y, m) {
+    const svc = getSvcConfig(svcName, planName);
+    if (!svc || !svc.patron_automatico || svc.patron_automatico.length === 0) return -1;
+    const habKey = `${svcName}@@${planName}`;
+    const off = getFirstDayOffset(y, m); // 0 = el mes empieza en lunes
+    const LETRAS = ['D', 'L', 'M', 'X', 'J', 'V', 'S'];
+    let count = 0;
+    if (!state.habilitaciones) state.habilitaciones = {};
+    for (let d = 1; d <= getDaysInMonth(y, m); d++) {
+        const semanaIdx = Math.floor((d - 1 + off) / 7);
+        const semana = svc.patron_automatico[semanaIdx % svc.patron_automatico.length] || [];
+        if (!semana.includes(LETRAS[new Date(y, m, d).getDay()])) continue;
+        const dk = formatDateKey(y, m, d);
+        if (!state.habilitaciones[dk]) state.habilitaciones[dk] = {};
+        if (state.habilitaciones[dk][habKey] === undefined) {
+            state.habilitaciones[dk][habKey] = svc.plazasPorDia >= 0 ? svc.plazasPorDia : 1;
+            count++;
+        }
+    }
+    return count;
+}
+
+/** Handler del botón "Generar huecos del mes": valida, confirma, genera y persiste. */
+async function ejecutarGeneracionPatron(svcName, planName, y, m) {
+    if (!puedeGestionarPlan(planName, y, m)) return alert('⚠️ Solo puedes generar huecos de tu propio plan.');
+    const svc = getSvcConfig(svcName, planName);
+    if (!svc || !svc.patron_automatico || svc.patron_automatico.length === 0) {
+        return alert('Este servicio no tiene patrón guardado. Escríbelo en el campo y pulsa "Guardar patrón" primero.');
+    }
+    if (!confirm(`¿Generar los huecos de ${svcName} (${planName}) para ${MONTHS[m]} ${y} según el patrón "${patronToText(svc.patron_automatico)}"?\n\nSolo se rellenarán días sin valor previo.`)) return;
+    const count = generarHuecosDesdePatron(svcName, planName, y, m);
+    if (count <= 0) return alert('No se generó ningún día nuevo (los días del patrón ya estaban definidos a mano).');
+    await saveState();
+    renderAdminCalendar();
+    alert(`✅ ${count} día(s) habilitados para ${svcName} (${planName}) en ${MONTHS[m]} ${y}. Ajusta lo que necesites con el pincel.`);
 }
 
 // ============================================================
