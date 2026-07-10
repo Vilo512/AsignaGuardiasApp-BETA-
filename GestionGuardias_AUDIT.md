@@ -34,7 +34,7 @@ Este archivo es la **memoria de trabajo persistente** del Engineering Lead entre
 | W10 | ⚠️ Diverge | §8 / §9 | Subasta no aislada por plan — mezcla residentes, huecos y caché entre R1/R2/R3 | `resuelto` |
 | W11 | ⚠️ Diverge | §8 | `_getAnalisisFestivosImpl` usaba `getComputedShifts` para contar huecos cubiertos — inconsistente con `state.shifts` en `renderAlertaCargaMensual` y `ejecutarAsignacionForzosa`; mes atascado con "0 guardias" | `resuelto` |
 | N1 | ✅ Hecho | §12 | Sistema de notificaciones in-app completo | `resuelto` |
-| N2 | ❌ Falta | §15 / §8.4 | Registro persistente de huecos sin candidato válido | `pendiente` |
+| N2 | ✅ Hecho | §15 / §8.4 | Registro persistente de huecos sin candidato válido | `resuelto` |
 | N3 | ✅ Hecho | §5.1 | Calendario automático de huecos desde patrón configurable | `resuelto` |
 | N4 | ❌ Falta | §4 / D-02 | Importación de festivos desde fuente oficial | `pendiente` |
 | N5 | ❌ Falta | §8.5 / §8.6 | Propuesta de asignación automática (revisión admin antes de ejecutar) + Forzamiento de turno por inactividad | `pendiente` |
@@ -655,10 +655,10 @@ alert(mensajeFinal);
 **Dependencias posteriores:** Ninguna
 
 ### Resultado
-**Estado final:** `pendiente`  
-**Decisiones tomadas:** —  
-**Efectos secundarios detectados:** —  
-**Archivos modificados:** —
+**Estado final:** `resuelto` (Julio 2026)  
+**Decisiones tomadas:** Persistencia en `state.huecosSinCandidato` (array propio, no exceptionLogs) con: dk, servicio, plan, mes (mk), candidatos evaluados con motivo de descarte ("Ya tiene guardia ese día" / "Descanso: <primer conflicto>"), origen ('forzosa'; N5 podrá registrar como 'propuesta') y timestamp. Cap de 300 entradas. La captura de motivos se hace en el bucle de `ejecutarAsignacionForzosa` vía `registrarHuecoSinCandidato()`. Vista integrada en Admin → Excepciones (panel "🕳️ Huecos sin candidato válido" filtrado por el mes visible, con detalle plegable de candidatos); el navegador de mes se muestra ahora también en la subpestaña Excepciones (§13.1). Borrado de entradas solo admin (`adminBorrarHuecoSinCandidato`, PRD §13.2). La notificación in-app `hueco_sin_candidato` a admin/delegados ya existía desde N1 y se mantiene; el alert() se conserva como feedback inmediato a quien ejecuta, pero la evidencia ya no se pierde.  
+**Efectos secundarios detectados:** Ninguno.  
+**Archivos modificados:** `app.js` (registrarHuecoSinCandidato, captura de motivos en ejecutarAsignacionForzosa, panel en renderAdminExceptions, adminBorrarHuecoSinCandidato, navAdmin), `index.html` (cache-buster v=2.6)
 
 ---
 

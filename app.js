@@ -2068,7 +2068,7 @@ function navAdmin(sub) {
       if (adminOnlySubs.includes(t)) tab.style.display = isAdmin ? '' : 'none';
     }
   });
-  document.getElementById('admin-nav-header').style.display = (sub === 'calendario' || sub === 'horas') ? 'block' : 'none';
+  document.getElementById('admin-nav-header').style.display = (sub === 'calendario' || sub === 'horas' || sub === 'excepciones') ? 'block' : 'none';
   document.getElementById('admin-cal-views').style.display = (sub === 'calendario') ? 'block' : 'none';
   if (sub === 'cuentas') renderAccountsList();
   if (sub === 'calendario') renderAdminCalendar();
@@ -3954,10 +3954,46 @@ function renderAdminExceptions() {
   for (const [u, reason] of Object.entries(pendings)) { pendHtml += `<div style="background:white; border:1px solid #cbd5e1; padding:10px; border-radius:8px; margin-bottom:8px;"><div style="font-weight:bold; margin-bottom:4px; color:var(--dark);">👤 Residente: ${u}</div><div style="font-size:0.85rem; color:#475569; margin-bottom:10px; background:#f1f5f9; padding:6px; border-radius:4px; border-left:3px solid var(--fest);">"${reason}"</div><div style="display:flex; gap:8px;"><button class="primary" style="padding:4px 10px; font-size:0.8rem; background:var(--ped);" onclick="adminApproveException('${u}', '${monthKey}')">✅ Validar y Saltar</button><button class="danger" style="padding:4px 10px; font-size:0.8rem;" onclick="adminRejectException('${u}', '${monthKey}')">❌ Rechazar</button></div></div>`; }
   if (!pendHtml) pendHtml = '<p style="font-size:0.85rem; color:#64748b;">No hay solicitudes pendientes.</p>'; pendList.innerHTML = pendHtml;
   const rList = document.getElementById('admin-reasons-list'); rList.innerHTML = (state.exceptionReasons || []).map((r, i) => `<div class="editor-row" style="justify-content:space-between; border-bottom:1px solid #e2e8f0; padding:6px 0;"><span style="color:#475569; font-size:0.9rem;">${r}</span><button class="danger icon-btn" style="padding:2px 6px; font-size:0.8rem;" onclick="adminRemoveExceptionReason(${i})">Borrar</button></div>`).join('');
+
+  // 🕳️ N2: Huecos sin candidato válido del mes visible (evidencia de sobrecarga)
+  let hscPanel = document.getElementById('huecos-sin-candidato-panel');
+  if (!hscPanel) {
+      hscPanel = document.createElement('div');
+      hscPanel.id = 'huecos-sin-candidato-panel';
+      hscPanel.className = 'rot-group';
+      document.getElementById('aview-excepciones')?.appendChild(hscPanel);
+  }
+  const registrosHSC = (state.huecosSinCandidato || []).filter(r => r.mk === monthKey);
+  let hscHtml = `<h4 style="margin:0; margin-bottom:1rem;">🕳️ Huecos sin candidato válido — ${MONTHS[m]} ${y}</h4>`;
+  if (registrosHSC.length === 0) {
+      hscHtml += `<p style="font-size:0.85rem; color:#64748b;">Sin registros este mes. Cuando una asignación forzosa no encuentre candidato legal para un hueco, la evidencia (fecha, servicio y por qué se descartó cada residente) quedará guardada aquí.</p>`;
+  } else {
+      registrosHSC.forEach(r => {
+          const idxGlobal = state.huecosSinCandidato.indexOf(r);
+          const cands = (r.candidatos || []).map(c => `<li style="font-size:0.78rem; color:#64748b;"><b>${c.n}</b>: ${c.motivo}</li>`).join('');
+          hscHtml += `<div style="background:#fef2f2; border:1px solid #fecaca; border-radius:8px; padding:10px; margin-bottom:8px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+                  <span style="font-size:0.9rem;">🔴 <b>${formatDK(r.dk)}</b> — ${r.svc}${r.plan ? ` <span style="font-size:0.75rem; color:#94a3b8;">(${r.plan})</span>` : ''} <span style="font-size:0.72rem; color:#94a3b8;">· ${r.origen} · ${r.ts}</span></span>
+                  ${isAdmin ? `<button class="danger icon-btn" style="padding:2px 6px; font-size:0.8rem;" onclick="adminBorrarHuecoSinCandidato(${idxGlobal})">🗑️</button>` : ''}
+              </div>
+              ${cands ? `<details style="margin-top:6px;"><summary style="font-size:0.78rem; cursor:pointer; color:#991b1b;">Candidatos evaluados (${(r.candidatos || []).length})</summary><ul style="margin:6px 0 0 16px;">${cands}</ul></details>` : ''}
+          </div>`;
+      });
+  }
+  hscPanel.innerHTML = hscHtml;
   const lList = document.getElementById('admin-logs-list'); if (!state.exceptionLogs || state.exceptionLogs.length === 0) { lList.innerHTML = "<p style='font-size:0.85rem; color:#64748b;'>Sin registros.</p>"; } else { lList.innerHTML = state.exceptionLogs.slice().reverse().map((l, revIdx) => { const origIdx = state.exceptionLogs.length - 1 - revIdx; return `<div style="background:#f1f5f9; padding:10px; border-radius:8px; margin-bottom:8px; font-size:0.85rem; border:1px solid #e2e8f0;"><div style="display:flex; justify-content:space-between; margin-bottom:4px;"><strong>👤 ${l.user}</strong><div><span style="color:#94a3b8; font-size:0.75rem; margin-right:8px;">🗓️ ${l.timestamp}</span><button class="danger icon-btn" style="padding:2px 6px; font-size:0.7rem;" onclick="adminDeleteLog(${origIdx})">Borrar</button></div></div><div>Mes: <b>${l.monthStr}</b></div><div style="color:var(--fest);">Motivo: <b>${l.reason}</b></div><div style="color:#475569; font-style:italic;">Retenidas: ${l.shiftsSummary}</div></div>`}).join(''); }
 }
 /** Elimina una entrada del log de excepciones por su índice. */
 async function adminDeleteLog(idx) { if (!confirm("¿Borrar?")) return; state.exceptionLogs.splice(idx, 1); await saveState(); renderAdminExceptions(); }
+/** 🕳️ N2: elimina un registro de hueco sin candidato (solo admin, por errores de registro — PRD §13.2). */
+async function adminBorrarHuecoSinCandidato(idx) {
+    if (!isAdmin) return alert('⚠️ Solo el admin puede borrar registros del histórico.');
+    if (!confirm('¿Borrar este registro de hueco sin candidato?')) return;
+    if (!state.huecosSinCandidato || !state.huecosSinCandidato[idx]) return;
+    state.huecosSinCandidato.splice(idx, 1);
+    await saveState();
+    renderAdminExceptions();
+}
 /** Valida la solicitud de excepción del residente y le salta el turno automáticamente. */
 async function adminApproveException(u, monthKey) { if(!confirm(`¿Validar?`)) return; const reason = state.pendingExceptions[monthKey][u]; const [yStr, mStr] = monthKey.split('_'); const y = parseInt(yStr, 10), m = parseInt(mStr, 10); let chosenShifts = []; for(let d=1; d<=getDaysInMonth(y, m); d++) { const dk = formatDateKey(y, m, d); if (state.shifts[dk] && state.shifts[dk][u]) chosenShifts.push(`Día ${d} (${state.shifts[dk][u]})`); } const shiftsSummary = chosenShifts.length > 0 ? chosenShifts.join(', ') : 'Ninguna'; if (!state.exceptionLogs) state.exceptionLogs = []; state.exceptionLogs.push({ user: u, monthStr: `${MONTHS[m]} ${y}`, reason: `(Validado) Otros: ${reason}`, shiftsSummary: shiftsSummary, timestamp: new Date().toLocaleString('es-ES') }); if (!state.skippedTurns[monthKey]) state.skippedTurns[monthKey] = []; if (!state.skippedTurns[monthKey].includes(u)) state.skippedTurns[monthKey].push(u); delete state.pendingExceptions[monthKey][u]; await saveState(); checkAutomaticGraduation();
     renderAll(); }
@@ -5193,6 +5229,31 @@ async /**
  * @param {number} m - 0-indexed
  * @param {string} targetSvcNombre - nombre del servicio a cubrir
  */
+/**
+ * 🕳️ N2 — Registra de forma persistente un hueco que la asignación forzosa no pudo
+ * cubrir: fecha, servicio, plan, candidatos evaluados con su motivo de descarte y
+ * origen del evento. Es la evidencia de exceso de carga asistencial (PRD §15/§8.4).
+ * Visible en Admin → Excepciones. Cap de 300 entradas (se conservan las más recientes).
+ * @param {string} dk
+ * @param {string} svcNombre
+ * @param {string} planNombre
+ * @param {number} y
+ * @param {number} m - 0-indexed
+ * @param {{n: string, motivo: string}[]} candidatosEvaluados
+ * @param {string} origen - 'forzosa' | 'propuesta' (N5) | ...
+ */
+function registrarHuecoSinCandidato(dk, svcNombre, planNombre, y, m, candidatosEvaluados, origen) {
+    if (!state.huecosSinCandidato) state.huecosSinCandidato = [];
+    state.huecosSinCandidato.push({
+        dk, svc: svcNombre, plan: planNombre, mk: getRotationKey(y, m),
+        candidatos: candidatosEvaluados || [], origen,
+        ts: new Date().toLocaleString('es-ES')
+    });
+    if (state.huecosSinCandidato.length > 300) {
+        state.huecosSinCandidato = state.huecosSinCandidato.slice(-300);
+    }
+}
+
 async function ejecutarAsignacionForzosa(y, m, targetSvcNombre) {
     const _pvForz = getCurrentRotPlan(formatDateKey(y, m, 1));
     if (!puedeGestionarPlan(_pvForz, y, m)) return alert('⚠️ Solo puedes forzar asignaciones de tu propio plan de guardias.');
@@ -5258,16 +5319,21 @@ async function ejecutarAsignacionForzosa(y, m, targetSvcNombre) {
     for (let hIdx = 0; hIdx < huecosLibres.length; hIdx++) {
         const hueco = huecosLibres[hIdx];
         let asignado = false;
+        const motivosHueco = []; // 🕳️ N2: por qué se descartó cada candidato de este hueco
 
         for (let c = 0; c < candidatos.length; c++) {
             const residente = candidatos[c];
-            if (state.shifts[hueco.dk]?.[residente]) continue; // ya cubre este día
+            if (state.shifts[hueco.dk]?.[residente]) {
+                motivosHueco.push({ n: residente, motivo: 'Ya tiene guardia ese día' });
+                continue;
+            }
 
             const projected = JSON.parse(JSON.stringify(state.shifts || {}));
             if (!projected[hueco.dk]) projected[hueco.dk] = {};
             projected[hueco.dk][residente] = hueco.svc;
 
-            if (getIllegalShiftsForUser(residente, projected).length === 0) {
+            const conflictos = getIllegalShiftsForUser(residente, projected);
+            if (conflictos.length === 0) {
                 if (!state.shifts[hueco.dk]) state.shifts[hueco.dk] = {};
                 state.shifts[hueco.dk][residente] = hueco.svc;
                 asignacionesLog.push(`${residente} → ${hueco.svc} (${formatDK(hueco.dk)})`);
@@ -5278,14 +5344,19 @@ async function ejecutarAsignacionForzosa(y, m, targetSvcNombre) {
                 candidatos.push(candidatos.splice(c, 1)[0]); // rotación fairness
                 asignado = true;
                 break;
-            } else if (nominadosSet.has(residente)) {
-                // Nominado bloqueado por conflicto de descanso (saliente/entrante)
-                nominadosBloqueados.add(residente);
+            } else {
+                motivosHueco.push({ n: residente, motivo: `Descanso: ${conflictos[0] || 'conflicto saliente/entrante'}` });
+                if (nominadosSet.has(residente)) {
+                    // Nominado bloqueado por conflicto de descanso (saliente/entrante)
+                    nominadosBloqueados.add(residente);
+                }
             }
         }
 
         if (!asignado) {
             huecosImpossibles.push(`${hueco.svc} (${formatDK(hueco.dk)})`);
+            // 🕳️ N2: la evidencia de sobrecarga se persiste (antes moría en el alert)
+            registrarHuecoSinCandidato(hueco.dk, hueco.svc, analisis.planNombre || '', y, m, motivosHueco, 'forzosa');
         }
     }
 
