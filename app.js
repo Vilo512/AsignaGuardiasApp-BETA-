@@ -752,7 +752,9 @@ async function cargarListaPromociones() {
   const selHosp = document.getElementById('sel-hospital');
   if (error || !data || data.length === 0) { selHosp.innerHTML = '<option value="">No hay hospitales registrados</option>'; return; }
   todasLasPromociones = data;
-  const hospitalesUnicos = [...new Set(data.map(p => p.hospital))].sort();
+  // 🏥 B6: las especialidades CERRADAS (activa=false) no son seleccionables para unirse
+  const disponibles = data.filter(p => p.activa !== false);
+  const hospitalesUnicos = [...new Set(disponibles.map(p => p.hospital))].sort();
   selHosp.innerHTML = '<option value="">-- Selecciona Hospital --</option>' + hospitalesUnicos.map(h => `<option value="${h}">${h}</option>`).join('');
 }
 
@@ -761,7 +763,7 @@ function onHospitalChange() {
   const hospElegido = document.getElementById('sel-hospital').value;
   const selServ = document.getElementById('sel-servicio');
   if (!hospElegido) { selServ.disabled = true; selServ.innerHTML = '<option value="">Primero elige un hospital</option>'; return; }
-  const serviciosFiltrados = todasLasPromociones.filter(p => p.hospital === hospElegido);
+  const serviciosFiltrados = todasLasPromociones.filter(p => p.hospital === hospElegido && p.activa !== false);
   selServ.disabled = false;
   // TEXTO ACTUALIZADO: Adiós al "Año"
   selServ.innerHTML = '<option value="">-- Elige Especialidad --</option>' + serviciosFiltrados.map(p => `<option value="${p.id}">${p.servicio} (${p.nombre})</option>`).join('');
@@ -782,12 +784,83 @@ async function solicitarUnirse() {
   await ejecutarSalidaFinal(promoId);
 }
 
-/** Solicita hospital y especialidad mediante prompts y crea una nueva promoción unificada. */
-function abrirCrearPromocion() {
-  const hospital = prompt("Nombre del Hospital (ej: Hospital Universitari Arnau de Vilanova, procura poner el nombre completo del hospital con mayúsculas apropiadas):"); if (!hospital) return;
-  const servicio = prompt("Especialidad (ej: Medicina Familiar y Comunitaria, Traumatología, procura poner el nombre completo de la especialidad según el BOE):"); if (!servicio) return;
-  
-  crearNuevaPromocionMaster(hospital, servicio, "Especialidad Completa");
+/**
+ * 🏥 B6: Panel de alta de nueva especialidad (sustituye a los prompt() de texto libre,
+ * que generaban hospitales duplicados). Dos rutas: elegir un hospital EXISTENTE de la
+ * lista y crear la especialidad dentro de él, o crear hospital + especialidad de cero.
+ */
+async function abrirCrearPromocion() {
+  document.getElementById('crear-promo-modal')?.remove();
+
+  // Lista fresca de promociones para poblar hospitales y detectar duplicados
+  try {
+      const { data } = await supabaseClient.from('promociones').select('*');
+      if (data) todasLasPromociones = data;
+  } catch (e) { /* si falla la red, usamos la lista ya cargada */ }
+
+  const hospitales = [...new Set((todasLasPromociones || []).map(p => p.hospital))].sort();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'crear-promo-modal';
+  modal.innerHTML = `
+    <div class="modal" style="max-width:540px; text-align:left;">
+        <h3 style="margin-bottom:0.5rem;">🏥 Dar de alta nueva especialidad</h3>
+        <p style="font-size:0.85rem; color:#64748b; margin-bottom:1rem;">Para evitar hospitales duplicados, elige el tuyo de la lista si ya existe. Crea uno nuevo <b>solo</b> si de verdad no está.</p>
+
+        <label style="font-size:0.8rem; font-weight:bold;">1. Hospital</label>
+        <select id="cp-hospital" onchange="onCrearPromoHospitalChange()" style="width:100%; margin-bottom:8px;">
+            <option value="">-- Selecciona tu hospital --</option>
+            ${hospitales.map(h => `<option value="${h}">${h}</option>`).join('')}
+            <option value="__NUEVO__">➕ Mi hospital no está en la lista (crear nuevo)...</option>
+        </select>
+        <input type="text" id="cp-hospital-nuevo" placeholder="Nombre COMPLETO y oficial (ej: Hospital Universitari Arnau de Vilanova)" style="width:100%; display:none; margin-bottom:8px;">
+
+        <label style="font-size:0.8rem; font-weight:bold;">2. Especialidad</label>
+        <input type="text" id="cp-servicio" placeholder="Nombre completo según el BOE (ej: Medicina Familiar y Comunitaria)" style="width:100%; margin-bottom:12px;">
+
+        <div style="display:flex; gap:8px; margin-top:6px;">
+            <button class="primary" style="flex:1;" onclick="confirmarCrearPromocion()">Crear especialidad</button>
+            <button onclick="document.getElementById('crear-promo-modal').remove()">Cancelar</button>
+        </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+/** Muestra el campo de texto de hospital nuevo solo si se eligió "crear nuevo". */
+function onCrearPromoHospitalChange() {
+    const sel = document.getElementById('cp-hospital');
+    const inp = document.getElementById('cp-hospital-nuevo');
+    if (sel && inp) inp.style.display = sel.value === '__NUEVO__' ? 'block' : 'none';
+}
+
+/** Valida el panel de alta (anti-duplicados) y delega en crearNuevaPromocionMaster. */
+function confirmarCrearPromocion() {
+    const selVal = document.getElementById('cp-hospital')?.value || '';
+    const nuevoTxt = (document.getElementById('cp-hospital-nuevo')?.value || '').trim();
+    const servicio = (document.getElementById('cp-servicio')?.value || '').trim();
+
+    if (!selVal) return alert('Selecciona tu hospital de la lista (o la opción de crear uno nuevo).');
+    if (!servicio) return alert('Escribe el nombre de la especialidad.');
+
+    let hospital;
+    if (selVal === '__NUEVO__') {
+        if (!nuevoTxt) return alert('Escribe el nombre completo del hospital nuevo.');
+        // Anti-duplicado: si ya existe uno con ese nombre (ignorando mayúsculas), obligamos a elegirlo
+        const yaExiste = (todasLasPromociones || []).map(p => p.hospital)
+            .find(h => h.trim().toLowerCase() === nuevoTxt.toLowerCase());
+        if (yaExiste) return alert(`⚠️ Ese hospital ya existe en la lista como "${yaExiste}". Selecciónalo del desplegable en vez de crearlo de nuevo.`);
+        hospital = nuevoTxt;
+    } else {
+        hospital = selVal; // string EXACTO del hospital existente → imposible duplicar
+    }
+
+    // Anti-duplicado de especialidad dentro del hospital
+    const svcExiste = (todasLasPromociones || []).find(p =>
+        p.hospital === hospital && (p.servicio || '').trim().toLowerCase() === servicio.toLowerCase());
+    if (svcExiste) return alert(`⚠️ La especialidad "${svcExiste.servicio}" ya existe en ${hospital}. Solicita acceso a ese grupo desde el selector en vez de crear otro.`);
+
+    document.getElementById('crear-promo-modal')?.remove();
+    crearNuevaPromocionMaster(hospital, servicio, "Especialidad Completa");
 }
 /**
  * Inserta la nueva promoción en Supabase y asigna al usuario actual como admin con la fecha de inicio indicada.
@@ -796,7 +869,9 @@ function abrirCrearPromocion() {
  * @param {string} n - nombre del contenedor
  */
 async function crearNuevaPromocionMaster(h, s, n) {
-  const fechaInicio = document.getElementById('onb-fecha-inicio').value;
+  // Desde el onboarding la fecha viene del formulario; desde la pestaña Grupos (usuario
+  // ya registrado) usamos la de su perfil.
+  const fechaInicio = document.getElementById('onb-fecha-inicio')?.value || currentUserProfile?.fecha_inicio_residencia;
   if (!fechaInicio) return alert("Por favor, establece tu fecha real de inicio de residencia en el formulario antes de crear el grupo.");
 
   setStatus('Creando contenedor...');
@@ -1815,8 +1890,8 @@ async function renderGruposView() {
         currentContainer.innerHTML = `<p style="color:#64748b; font-style:italic;">No estás en ningún grupo actualmente.</p>`;
     }
 
-    // 2. DIBUJAR LISTA DE OTROS GRUPOS
-    const otherPromos = promos.filter(p => p.id !== currentUserProfile.promocion_id);
+    // 2. DIBUJAR LISTA DE OTROS GRUPOS (las especialidades cerradas no admiten solicitudes)
+    const otherPromos = promos.filter(p => p.id !== currentUserProfile.promocion_id && p.activa !== false);
     if (otherPromos.length === 0) {
         listContainer.innerHTML = `<p style="color:#64748b; background:#f1f5f9; padding:15px; border-radius:8px;">No hay otros grupos registrados en el sistema.</p>`;
         return;
@@ -2078,24 +2153,78 @@ function navAdmin(sub) {
   if (sub === 'horas') renderAdminHoras();
 }
 
-/** Rellena el formulario de seguridad con los datos actuales de la promoción desde Supabase. */
+/**
+ * 🏥 B6: Rellena el panel de Seguridad: propiedades de la promoción propia (especialidad,
+ * hospital con selector anti-duplicados, estado abierta/cerrada) y el listado global de
+ * especialidades con borrado de grupos vacíos.
+ */
 async function renderAdminSeguridad() {
-    const { data: promo, error } = await supabaseClient.from('promociones').select('servicio').eq('id', currentUserProfile.promocion_id).single();
-    if (!error && promo) {
-        document.getElementById('edit-promo-servicio').value = promo.servicio || '';
+    const { data: todas, error } = await supabaseClient.from('promociones').select('*');
+    if (error || !todas) return;
+    todasLasPromociones = todas;
+    const promo = todas.find(p => p.id === currentUserProfile.promocion_id);
+    if (!promo) return;
+
+    document.getElementById('edit-promo-servicio').value = promo.servicio || '';
+    document.getElementById('edit-promo-activa').value = promo.activa === false ? 'false' : 'true';
+
+    const hospitales = [...new Set(todas.map(p => p.hospital))].sort();
+    const selHosp = document.getElementById('edit-promo-hospital');
+    selHosp.innerHTML = hospitales.map(h => `<option value="${h}" ${h === promo.hospital ? 'selected' : ''}>${h}</option>`).join('')
+        + '<option value="__NUEVO__">➕ Otro hospital (crear nuevo)...</option>';
+    onEditPromoHospitalChange();
+
+    // Listado global de especialidades (grupos vacíos borrables; el servidor verifica)
+    const listEl = document.getElementById('admin-promos-list');
+    if (listEl) {
+        listEl.innerHTML = todas
+            .sort((a, b) => (a.hospital + a.servicio).localeCompare(b.hospital + b.servicio))
+            .map(p => {
+                const esMia = p.id === currentUserProfile.promocion_id;
+                const estado = p.activa === false ? '🔒 Cerrada' : '🟢 Abierta';
+                return `<div style="background:white; border:1px solid #e2e8f0; border-radius:8px; padding:10px 12px; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                    <span style="font-size:0.88rem;"><b>${p.servicio}</b> <span style="color:#64748b;">— ${p.hospital}</span> <span style="font-size:0.75rem; color:#94a3b8;">· ${estado}${esMia ? ' · (la tuya)' : ''}</span></span>
+                    ${!esMia ? `<button class="danger icon-btn" style="padding:3px 8px; font-size:0.78rem;" onclick="adminBorrarPromocionVacia('${p.id}')">🗑️ Borrar si está vacía</button>` : ''}
+                </div>`;
+            }).join('');
     }
 }
 
-/** Guarda el nuevo nombre de especialidad de la promoción en Supabase y recarga la página. */
+/** Muestra el campo de hospital nuevo del panel de Seguridad solo si se eligió "crear nuevo". */
+function onEditPromoHospitalChange() {
+    const sel = document.getElementById('edit-promo-hospital');
+    const inp = document.getElementById('edit-promo-hospital-nuevo');
+    if (sel && inp) inp.style.display = sel.value === '__NUEVO__' ? 'block' : 'none';
+}
+
+/** 🏥 B6: Guarda especialidad, hospital y estado (abierta/cerrada) de la promoción propia. */
 async function adminUpdatePromoDetails() {
     const newServicio = document.getElementById('edit-promo-servicio').value.trim();
     if (!newServicio) return alert("El campo de la especialidad no puede estar vacío.");
-    
+
+    const selVal = document.getElementById('edit-promo-hospital')?.value || '';
+    const nuevoTxt = (document.getElementById('edit-promo-hospital-nuevo')?.value || '').trim();
+    let newHospital;
+    if (selVal === '__NUEVO__') {
+        if (!nuevoTxt) return alert('Escribe el nombre completo del hospital nuevo.');
+        const yaExiste = (todasLasPromociones || []).map(p => p.hospital)
+            .find(h => h.trim().toLowerCase() === nuevoTxt.toLowerCase());
+        if (yaExiste) return alert(`⚠️ Ese hospital ya existe como "${yaExiste}". Selecciónalo del desplegable.`);
+        newHospital = nuevoTxt;
+    } else {
+        newHospital = selVal;
+    }
+    if (!newHospital) return alert('Selecciona el hospital.');
+
+    const newActiva = document.getElementById('edit-promo-activa')?.value !== 'false';
+
     setStatus('Guardando...');
     const { error } = await supabaseClient.from('promociones').update({
-        servicio: newServicio
+        servicio: newServicio,
+        hospital: newHospital,
+        activa: newActiva
     }).eq('id', currentUserProfile.promocion_id);
-    
+
     if (error) {
         alert("Error al actualizar: " + error.message);
         setStatus('Error ❌');
@@ -2104,6 +2233,28 @@ async function adminUpdatePromoDetails() {
         setStatus('Conectado ✅');
         window.location.reload(); // Reload to refresh headers
     }
+}
+
+/**
+ * 🏥 B6: Borra una promoción ajena SOLO si está vacía. La política RLS del servidor
+ * exige 0 perfiles vinculados: si tiene miembros, el delete no borra ninguna fila y
+ * se informa — imposible cargarse un grupo activo por accidente.
+ */
+async function adminBorrarPromocionVacia(promoId) {
+    if (!isAdmin) return alert('⚠️ Solo el admin puede borrar grupos.');
+    if (promoId === currentUserProfile.promocion_id) return alert('Esa es tu propia promoción: usa la Zona de Peligro si de verdad quieres borrarla.');
+    const p = (todasLasPromociones || []).find(x => x.id === promoId);
+    if (!confirm(`¿Borrar el grupo "${p ? p.servicio + ' — ' + p.hospital : promoId}"?\n\nSolo se borrará si está completamente vacío (sin ningún perfil vinculado).`)) return;
+
+    setStatus('Borrando...');
+    const { data, error } = await supabaseClient.from('promociones').delete().eq('id', promoId).select();
+    setStatus('Conectado ✅');
+    if (error) return alert('Error al borrar: ' + error.message);
+    if (!data || data.length === 0) {
+        return alert('🛡️ No se borró: el grupo tiene miembros vinculados (o no tienes permiso). Solo los grupos vacíos pueden eliminarse.');
+    }
+    alert('🗑️ Grupo vacío eliminado correctamente.');
+    renderAdminSeguridad();
 }
 
 /**
