@@ -317,12 +317,29 @@
           <h3>Ajustes de la Promoción</h3>
           
           <div style="margin-top: 1.5rem; padding: 1.5rem; border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc;">
-            <p style="font-size: 0.85rem; color: #475569; margin-bottom: 1rem;">Edita el nombre de tu especialidad si te equivocaste al crearlo.</p>
+            <p style="font-size: 0.85rem; color: #475569; margin-bottom: 1rem;">Edita las propiedades de tu especialidad: nombre, hospital al que pertenece y si admite nuevas altas.</p>
             <div style="display:flex; flex-direction:column; gap:10px;">
                 <label style="font-weight:bold; font-size:0.9rem;">Especialidad:</label>
                 <input type="text" id="edit-promo-servicio" placeholder="Ej. Traumatología" style="padding:8px; border:1px solid #cbd5e1; border-radius:4px;">
+
+                <label style="font-weight:bold; font-size:0.9rem;">Hospital:</label>
+                <select id="edit-promo-hospital" onchange="onEditPromoHospitalChange()" style="padding:8px; border:1px solid #cbd5e1; border-radius:4px;"></select>
+                <input type="text" id="edit-promo-hospital-nuevo" placeholder="Nombre COMPLETO y oficial del hospital nuevo" style="display:none; padding:8px; border:1px solid #cbd5e1; border-radius:4px;">
+
+                <label style="font-weight:bold; font-size:0.9rem;">Estado:</label>
+                <select id="edit-promo-activa" style="padding:8px; border:1px solid #cbd5e1; border-radius:4px;">
+                    <option value="true">🟢 Abierta — visible en el onboarding, admite solicitudes</option>
+                    <option value="false">🔒 Cerrada — no aparece en el onboarding (los miembros actuales siguen con normalidad)</option>
+                </select>
+
                 <button class="primary" style="background:var(--dark); max-width:200px; margin-top:5px;" onclick="adminUpdatePromoDetails()">Guardar Cambios</button>
             </div>
+          </div>
+
+          <div style="margin-top: 1.5rem; padding: 1.5rem; border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc;">
+            <h4 style="margin-top:0;">🏥 Todas las especialidades registradas</h4>
+            <p style="font-size: 0.85rem; color: #475569; margin-bottom: 1rem;">Los grupos <b>vacíos</b> (sin ningún perfil vinculado) pueden borrarse desde aquí — el servidor rechaza el borrado si tienen miembros, así que la especialidad activa nunca corre peligro.</p>
+            <div id="admin-promos-list"><p style="color:#64748b; font-size:0.85rem;">Cargando...</p></div>
           </div>
 
           <div style="margin-top: 2rem; padding: 1.5rem; border: 2px dashed #ef4444; border-radius: 8px; background: #fef2f2;">
@@ -371,6 +388,6 @@
         </div>
     </div>
 
-    <script src="app.js?v=2.6"></script>
+    <script src="app.js?v=2.7"></script>
 </body>
 </html>
