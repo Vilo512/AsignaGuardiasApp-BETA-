@@ -36,7 +36,7 @@ Este archivo es la **memoria de trabajo persistente** del Engineering Lead entre
 | N1 | ✅ Hecho | §12 | Sistema de notificaciones in-app completo | `resuelto` |
 | N2 | ✅ Hecho | §15 / §8.4 | Registro persistente de huecos sin candidato válido | `resuelto` |
 | N3 | ✅ Hecho | §5.1 | Calendario automático de huecos desde patrón configurable | `resuelto` |
-| N4 | ❌ Falta | §4 / D-02 | Importación de festivos desde fuente oficial | `pendiente` |
+| N4 | ✅ Hecho | §4 / D-02 | Importación de festivos desde fuente oficial | `resuelto` |
 | N5 | ❌ Falta | §8.5 / §8.6 | Propuesta de asignación automática (revisión admin antes de ejecutar) + Forzamiento de turno por inactividad | `pendiente` |
 
 ---
@@ -691,7 +691,7 @@ Los campos `modo_calendario` y `patron_automatico` existen en el modelo de servi
 ### N4 — Importación de festivos desde fuente oficial
 **Sección PRD:** §4 / Decisión pendiente D-02  
 **Impacto:** Bajo — solo eficiencia del admin; la entrada manual funciona  
-**Estado:** `pendiente`
+**Estado:** `resuelto`
 
 **Diagnóstico:**
 No existe campo de localidad en el contenedor, no hay API conectada, solo entrada manual por pincel en `renderAdminCalendar`.
@@ -709,10 +709,10 @@ No existe campo de localidad en el contenedor, no hay API conectada, solo entrad
 **Dependencias posteriores:** Ninguna
 
 ### Resultado
-**Estado final:** `pendiente`  
-**Decisiones tomadas:** —  
-**Efectos secundarios detectados:** —  
-**Archivos modificados:** —
+**Estado final:** `resuelto` (Julio 2026)  
+**Decisiones tomadas:** Se evaluaron dos fuentes: `date.nager.at` (solo nacional+comunidad autónoma) y `calendariosnacionales.com` (baja a nivel municipal, incluye festivos locales — verificado con Lleida: 11 mayo y 29 sept, coincide con la Fiesta Mayor real vía Ajuntament). Se descartó la segunda tras verificación EN NAVEGADOR REAL: no soporta CORS (fetch cruzado falla con "Failed to fetch"; confirmado con control experimental usando date.nager.at, que sí responde 200 desde el mismo origen externo). Implementarla habría requerido una Supabase Edge Function como proxy — se decidió NO añadir esa infraestructura y optar por un **enfoque híbrido**: import automático de nacional+autonómico vía Nager.Date (`promoConfig.festivosRegion = {codigo, nombre}`, sin migración de esquema, jsonb existente) + festivos LOCALES de municipio añadidos a mano con el pincel de festivos ya existente (aviso explícito en el modal de importación). Selector de Comunidad Autónoma en Admin→Ajustes (lista estática de 17 CCAA con código ISO 3166-2 verificado contra los `counties` reales devueltos por la API para España 2026). Botón "Importar festivos {año}" en Admin→Calendario con modal de checkboxes editables (todo pre-marcado, nada se escribe hasta confirmar); solo escribe los días marcados, no toca el resto del calendario.  
+**Efectos secundarios detectados:** Ninguno. Nota de calidad de datos observada en la fuente (no en el código): el `localName` de "Sant Esteve" (26 dic, Cataluña) viene en inglés ("Feast of Saint Stephen") en Nager para 2026 — cosmético, sin impacto porque `state.festivos` solo persiste un booleano por día, no el nombre.  
+**Archivos modificados:** `app.js` (FESTIVOS_CCAA_ES, guardarRegionFestivos, abrirImportarFestivosModal, confirmarImportarFestivos, card en renderAdminAjustes, botón en renderAdminCalendar — también fix del bug pre-existente de "🧨 Borrar mes entero" que no seguía el mes navegado), `index.html` (cache-buster v=2.8)
 
 ---
 
