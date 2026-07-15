@@ -964,7 +964,8 @@ function onAdminActionConfirm(y, m) {
         if (!puedeGestionarPlan(planSel, y, m)) { alert('⚠️ Solo puedes otorgar turnos dentro de tu propio plan de guardias.'); return; }
         if (!residentePerteneceAPlan(res, planSel, y, m)) { alert('⚠️ Ese residente no pertenece al plan seleccionado este mes.'); return; }
         if (!state.grantedTurn) state.grantedTurn = {};
-        state.grantedTurn[getRotationKey(y, m)] = res;
+        // La clave incluye el plan: cada plan tiene su propio turno otorgado y no se pisan
+        state.grantedTurn[_grantedTurnKey(y, m, planSel)] = res;
         if (!state.exceptionLogs) state.exceptionLogs = [];
         state.exceptionLogs.push({ user: res, monthStr: `${MONTHS[m]} ${y}`, reason: 'Turno otorgado manualmente por admin', shiftsSummary: '', timestamp: new Date().toLocaleString('es-ES') });
         saveState(); renderAll();
@@ -2470,9 +2471,8 @@ function renderMainCalendar() {
        // gestión solo se ofrecen si puede gestionar ese plan.
        const planVista = getCurrentRotPlan(formatDateKey(y, m, 1));
        const esGestor = puedeGestionarPlan(planVista, y, m);
-       // El turno otorgado solo es relevante aquí si el agraciado pertenece al plan visualizado
-       const grantedRaw = state.grantedTurn[monthKey];
-       const granted = (grantedRaw && residentePerteneceAPlan(grantedRaw, planVista, y, m)) ? grantedRaw : null;
+       // Turno otorgado del plan visualizado (cada plan tiene el suyo)
+       const granted = _getGrantedTurn(y, m, planVista)?.nombre || null;
        let html = `<div style="background:#f1f5f9; border:1px solid #cbd5e1; color:#475569; padding:10px 12px; border-radius:8px; margin-bottom:1rem; font-size:0.85rem; display:flex; flex-direction:column; gap:8px;">`;
        const af = !turnUser ? getAnalisisFestivos(y, m) : null;
        let turnLabel;
@@ -2924,36 +2924,46 @@ async function adminSkipTurn(turnUser, y, m) {
 // Exportar a: src/modules/modalesCalendario.js  ← mismo archivo
 // Líneas estimadas: ~30
 // Dependencias externas: state.grantedTurn, simulatedViewUser
-// Helpers que usa: getRotationKey, saveState, renderAll, MONTHS
+// Helpers que usa: getRotationKey, residentePerteneceAPlan, getCurrentRotPlan,
+//                  puedeGestionarPlan, saveState, renderAll
 // ============================================================
 /**
- * Otorga manualmente el turno de elección a un residente específico este mes (grantedTurn).
+ * Clave de turno otorgado: mes + plan. Antes era solo el mes, así que en un contenedor
+ * con varios planes solo cabía UN turno otorgado al mes: si la delegada de R1 otorgaba
+ * uno y luego alguien otorgaba otro en R2, el segundo pisaba al primero en silencio.
+ * Mismo esquema que keyMes de la subasta (subastaSnapshot / fechaFinRonda).
  * @param {number} y
- * @param {number} m
+ * @param {number} m - 0-indexed
+ * @param {string} planName
+ * @returns {string} "YYYY_MM_Plan"
  */
-async function adminGrantTurn(y, m) {
-    if (simulatedViewUser !== null) { alert('⚠️ Estás en modo visualización. Sal de la simulación para realizar cambios.'); return; }
-    const sel = document.getElementById('sel-grant-turn');
-    const residente = sel?.value;
-    if (!residente) { alert('Selecciona un residente al que otorgar el turno.'); return; }
-    const monthKey = getRotationKey(y, m);
-    if (!state.grantedTurn) state.grantedTurn = {};
-    state.grantedTurn[monthKey] = residente;
-    if (!state.exceptionLogs) state.exceptionLogs = [];
-    state.exceptionLogs.push({
-        user: residente, monthStr: `${MONTHS[m]} ${y}`,
-        reason: `Turno otorgado manualmente por admin`,
-        shiftsSummary: '', timestamp: new Date().toLocaleString('es-ES')
-    });
-    await saveState();
-    maybeNotifyTurnChange(y, m);
-    renderAll();
+function _grantedTurnKey(y, m, planName) { return `${getRotationKey(y, m)}_${planName}`; }
+
+/**
+ * Devuelve el turno otorgado vigente para ese mes y plan, o null. Acepta las claves del
+ * esquema antiguo (solo mes) validando que el agraciado pertenezca al plan consultado,
+ * para no perder turnos otorgados que estuvieran vivos al desplegar este cambio.
+ * @param {number} y
+ * @param {number} m - 0-indexed
+ * @param {string} planName
+ * @returns {{nombre: string, clave: string}|null} clave = dónde está guardado (para borrarlo)
+ */
+function _getGrantedTurn(y, m, planName) {
+    if (!state.grantedTurn || !planName) return null;
+    const k = _grantedTurnKey(y, m, planName);
+    if (state.grantedTurn[k]) return { nombre: state.grantedTurn[k], clave: k };
+    const mkLegacy = getRotationKey(y, m);
+    const legacy = state.grantedTurn[mkLegacy];
+    if (legacy && residentePerteneceAPlan(legacy, planName, y, m)) return { nombre: legacy, clave: mkLegacy };
+    return null;
 }
 
-/** Cancela el turno especial otorgado para este mes, volviendo al turno natural. */
+/** Cancela el turno especial otorgado para este mes EN EL PLAN VISUALIZADO, volviendo al turno natural. */
 async function adminClearGrantedTurn(y, m) {
-    const monthKey = getRotationKey(y, m);
-    if (state.grantedTurn) delete state.grantedTurn[monthKey];
+    const planVista = getCurrentRotPlan(formatDateKey(y, m, 1));
+    if (!puedeGestionarPlan(planVista, y, m)) return alert('⚠️ Solo puedes cancelar turnos otorgados de tu propio plan de guardias.');
+    const g = _getGrantedTurn(y, m, planVista);
+    if (g && state.grantedTurn) delete state.grantedTurn[g.clave];
     await saveState();
     renderAll();
 }
@@ -6318,22 +6328,22 @@ function getCurrentTurn(y, m, forcedPlanName) {
             .filter(r => residentePerteneceAPlan(r, planName, y, m));
         if (orden.length === 0) return null;
 
-        // 💡 TURNO OTORGADO: si el admin otorgó el turno a alguien DE ESTE PLAN, tiene
-        // prioridad absoluta. Si el agraciado es de otro plan, este plan lo ignora
-        // (y no lo borra: le pertenece a la evaluación del otro plan).
+        // 💡 TURNO OTORGADO: cada plan tiene el suyo (clave mes+plan), así que el de otro
+        // plan ni se ve desde aquí. Tiene prioridad absoluta sobre la rotación natural.
         if (!state.grantedTurn) state.grantedTurn = {};
-        const grantee = state.grantedTurn[mk];
-        if (grantee && residentePerteneceAPlan(grantee, planName, y, m)) {
+        const _granted = _getGrantedTurn(y, m, planName);
+        if (_granted) {
+            const grantee = _granted.nombre;
             const activosMesG = getResidentesActivosEnMes(y, m);
             const isActive = activosMesG.some(a => a.toLowerCase() === grantee.toLowerCase());
             if (isActive) {
                 const progG = getUserProgress(grantee, y, m);
                 if (!progG.isFinished) return grantee; // Sigue siendo su turno
                 // Ya terminó → limpiamos el turno otorgado y seguimos con rotación normal
-                delete state.grantedTurn[mk];
+                delete state.grantedTurn[_granted.clave];
                 saveState(); // guardamos en background, sin await para no bloquear
             } else {
-                delete state.grantedTurn[mk];
+                delete state.grantedTurn[_granted.clave];
             }
         }
 
