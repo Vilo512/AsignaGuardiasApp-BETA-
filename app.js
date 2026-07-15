@@ -107,7 +107,10 @@ async function limpiarFuturos(y, m) {
     if (changed) await saveState();
 }
 
-let curDate = new Date(2026, 0, 1);
+// 📅 La app abre SIEMPRE en el mes real en curso (antes estaba fijada a enero de 2026,
+// así que con el paso de los meses todos aterrizaban en el pasado y tenían que navegar
+// con ◀▶ hasta hoy). El mes sigue siendo explícito y navegable (PRD §13.1).
+let curDate = (() => { const _hoy = new Date(); return new Date(_hoy.getFullYear(), _hoy.getMonth(), 1); })();
 let selectedRotPlan = null;
 /**
  * Devuelve el nombre del plan de rotación activo para una dateKey dada.
@@ -3853,10 +3856,10 @@ function renderAdminCalendar() {
                 <button class="primary" style="padding:5px 10px; font-size:0.8rem;" onclick="guardarRegionFestivos()">💾 Guardar</button>
                 <span style="width:1px; height:22px; background:#e2e8f0;"></span>
                 <label style="font-size:0.8rem; color:#475569;">Año:</label>
-                <select id="import-festivos-year" style="margin:0; padding:5px; font-size:0.85rem;">
+                <select id="import-festivos-year" onchange="irAAnioFestivos(this.value)" style="margin:0; padding:5px; font-size:0.85rem;">
                     ${_years.map(yy => `<option value="${yy}" ${yy === y ? 'selected' : ''}>${yy}</option>`).join('')}
                 </select>
-                <button class="primary" style="background:#0891b2; padding:5px 10px; font-size:0.8rem;" onclick="abrirImportarFestivosModal(parseInt(document.getElementById('import-festivos-year').value, 10))">✨ Importar festivos</button>
+                <button class="primary" style="background:#0891b2; padding:5px 10px; font-size:0.8rem;" onclick="abrirImportarFestivosModal(${y})">✨ Importar festivos</button>
                 <span style="flex-basis:100%; font-size:0.72rem; color:#94a3b8;">${_fr ? `📍 Configurado: <b>${_fr.nombre}</b>. ` : '⚠️ Elige tu Comunidad Autónoma y pulsa Guardar antes de importar. '}Importa festivos nacionales + autonómicos del año elegido (fuente: Nager.Date, agregador público sin garantía oficial — revísalos antes de confirmar). Los festivos <b>LOCALES</b> de tu municipio (fiesta mayor, patrón...) no están cubiertos: píntalos a mano con este mismo pincel.</span>
             </div>`;
         festPanel.style.display = 'block';
@@ -4001,6 +4004,21 @@ const FESTIVOS_CCAA_ES = [
     { codigo: 'ES-PV', nombre: 'País Vasco' },
     { codigo: 'ES-MC', nombre: 'Región de Murcia' },
 ];
+
+/**
+ * Salta a enero del año elegido en el selector de festivos. El selector NAVEGA (no es un
+ * campo suelto): así el mes visible y el año a importar nunca se contradicen — antes,
+ * elegir 2027 mirando enero de 2026 se revertía solo en el siguiente re-render.
+ * @param {string|number} anio
+ */
+function irAAnioFestivos(anio) {
+    const yy = parseInt(anio, 10);
+    if (isNaN(yy)) return;
+    curDate = new Date(yy, 0, 1);
+    editingGroups = null;
+    checkAutomaticGraduation();
+    renderAll();
+}
 
 /** Persiste la Comunidad Autónoma elegida en la config de la promoción (jsonb, sin migración). */
 async function guardarRegionFestivos() {
