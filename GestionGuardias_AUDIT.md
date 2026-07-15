@@ -1,8 +1,8 @@
 # GestionGuardias App — Auditoría de Implementación
 **Versión PRD auditada:** 1.2  
-**Codebase auditado:** `app.js` (4 600+ líneas, monolítico vanilla JS + Supabase)  
-**Fecha de última revisión:** Junio 2026  
-**Estado general:** 1 divergencia activa, 4 funciones no implementadas. 19 ítems resueltos o alineados con PRD v1.2. 1 ítem nuevo (W4-B) pendiente de implementación futura.
+**Codebase auditado:** `app.js` (6 900+ líneas, monolítico vanilla JS + Supabase)  
+**Fecha de última revisión:** Julio 2026  
+**Estado general:** 0 divergencias activas. **N5 es el único ítem pendiente del MVP** (N1-N4 resueltos). 3 ítems en ruta futura post-MVP: W4-B (memoria de slots inter-plan), N6 (asignación automática con vacaciones) y N7 (graduación real al agotar planes).
 
 ---
 
@@ -38,6 +38,8 @@ Este archivo es la **memoria de trabajo persistente** del Engineering Lead entre
 | N3 | ✅ Hecho | §5.1 | Calendario automático de huecos desde patrón configurable | `resuelto` |
 | N4 | ✅ Hecho | §4 / D-02 | Importación de festivos desde fuente oficial | `resuelto` |
 | N5 | ❌ Falta | §8.5 / §8.6 | Propuesta de asignación automática (revisión admin antes de ejecutar) + Forzamiento de turno por inactividad | `pendiente` |
+| N6 | 🔮 Futuro | §8.5 (ext.) | Asignación automática con vacaciones: modelo de vacaciones día-a-día + informe de viabilidad + optimizador con backtracking | `pendiente` |
+| N7 | 🔮 Futuro | §9.5 / §13.3 | Graduación real al agotar los planes: quitar el clamp, graduación con fecha, bloqueos y aceptación | `pendiente` |
 
 ---
 
@@ -750,6 +752,104 @@ Ambas funciones operan sobre **un único servicio** a la vez y requieren que el 
 ### Resultado
 **Estado final:** `pendiente`  
 **Decisiones tomadas:** Concepto "Activar subasta ya" rediseñado — propuesta con revisión reemplaza ejecución inmediata (Junio 2026)  
+**Efectos secundarios detectados:** —  
+**Archivos modificados:** —
+
+---
+
+## Ítems 🔮 — Ruta futura (post-MVP)
+
+---
+
+### N6 — Asignación automática con vacaciones
+**Sección PRD:** §8.5 (extensión) — pendiente de redactar en el PRD  
+**Impacto:** Alto — es el "ultimate automation tool" para meses conflictivos (diciembre, agosto)  
+**Estado:** `pendiente` (roadmap, NO para el MVP — decisión de Vincenzo, jul 2026)
+
+**Concepto:**
+El admin abre una ventana ("poned vuestras vacaciones para diciembre"), los residentes marcan sus días, y el sistema produce una **propuesta de guardias completa** que respeta vacaciones, festivos, cupos, reglas obligatorias y salientes. La propuesta se publica al grupo en una pantalla aparte; si no hay conformidad, se descarta y se vuelve a la elección por rotación.
+
+**Regla de vacaciones (definida con Vincenzo):**
+- **Ningún turno en un día de vacaciones.** Punto.
+- El **saliente SÍ** puede caer en vacaciones ("como mucho, vacaciones en saliente"): guardia el día 9 + vacaciones desde el 10 es válido. No requiere lógica especial — el saliente no es un turno.
+- Después de las vacaciones se puede hacer guardia con normalidad.
+
+**⚠️ LA TRAMPA (verificado en código, jul 2026):**
+`state.bajasLargas` **NO sirve** para vacaciones. `getResidentesActivosEnMes()` excluye del **mes entero** a quien tenga una baja que solape *un solo día* (el propio formulario lo dice: *"el motor te saltará automáticamente en los meses afectados"*). Unas vacaciones del 1 al 15 de diciembre borrarían al residente de todo diciembre, incluidos los días 16-31 en los que debería hacer guardias. **Vacaciones necesita ser un concepto NUEVO a nivel de día** que bloquee días sin sacar a nadie de la rotación del mes. Las bajas largas (maternidad, IT) se quedan como están.
+
+**Reencuadre clave (Vincenzo + análisis, jul 2026): el valor está en DIAGNOSTICAR, no en asignar.**
+El cuello de botella de diciembre no es la capacidad agregada (con cupos de 4-5/mes sobran días físicos aunque alguien libre 15 días), sino la **concentración en días concretos**: el 24, el 25, el 31. Si los 5 residentes de un plan marcan el 25, ese día es **matemáticamente incubrible** — no es un problema de optimización, es un conflicto social. Lo valioso es que el sistema diga *"25/12 — Urgencias: 0 candidatos, todos de vacaciones; alguien tiene que ceder"* y *"31/12: 1 candidato (Marta), forzada, sin reparto justo posible"*. Eso convierte la discusión de WhatsApp en aritmética. Para los días contestados pero cubribles, los criterios de §8.4 (`historico_festivos`) ya resuelven el reparto justo.
+
+**Lo que YA existe y se reutiliza:**
+- `proyectarAsignacionForzosa(y, m, analisis)` — **es el germen del motor**: simula sin tocar `state.shifts`, valida salientes con `getIllegalShiftsForUser` y marca los huecos imposibles. Pero es **monoservicio** (solo el de la subasta activa) y **greedy** (primer candidato que encaja).
+- `getIllegalShiftsForUser`, `isUserBusyOnDay`, `getPlazasForDay`, `isServiceEnabledOnDate`, `getDayTag`, `getUserProgress` (cupos + reglas + válvula de escape `hasAvailableLegalSlots`), `getResidentesDePlan` (B3), `getHistoricoFestivosResidentes` (criterios §8.4).
+- `state.huecosSinCandidato` (N2) — **el hook ya está puesto**: `registrarHuecoSinCandidato(..., origen)` acepta `'propuesta'`.
+- Notificaciones N1 para publicar la propuesta.
+
+**Acción requerida (por fases, ~4-5 sesiones):**
+1. **Modelo de vacaciones día-a-día** (media-baja): concepto nuevo + `estaDeVacaciones(user, dk)`; integrar en `openShiftModal` (bloquear día), `hasAvailableLegalSlots` (saltar), `proyectarAsignacionForzosa` (excluir), `getUserProgress` (la válvula de escape existente perdonaría reglas imposibles sola). **Ya aporta valor aunque la asignación siga siendo por rotación.**
+2. **Ventana de vacaciones** (baja): el admin abre/cierra el marcado por mes.
+3. **👑 Informe de viabilidad por día** (media): candidatos disponibles por hueco; días con 0 → bandera roja; días con 1 → forzado sin alternativa. **La joya de la corona.**
+4. **Motor multiservicio con backtracking** (ALTA): el greedy actual se atasca en diciembre. Hace falta "most-constrained-first" + backtracking con límite de nodos. Con ~5-15 residentes × 31 días es tratable en ms; el riesgo no es rendimiento, es corrección y saber explicar por qué falla.
+5. **Pantalla de propuesta pública + estados** (media): `borrador → publicada → aceptada/rechazada`, sin tocar `state.shifts` hasta aceptar. Por plan (B2).
+
+**Decisiones de producto pendientes:**
+- ¿Las vacaciones se aprueban o son libres? ¿Tope de días?
+- ¿Quemar el primer día de vacaciones con un saliente es aceptable o solo tolerable? (si es "tolerable" → penalización blanda, no restricción dura)
+- ¿Quién acepta la propuesta? ¿Ventana de objeciones del grupo?
+- ¿El mes tendría un "modo" (rotación / propuesta)? Hoy no existe tal concepto.
+
+**Orden recomendado:** fases 1-3 primero (valor inmediato, y los datos de vacaciones reales quedan en el sistema); el optimizador después, cuando se pueda probar contra un diciembre de verdad.
+
+**Dependencias previas:** Ninguna técnica (B2 y N2 ya están)  
+**Dependencias posteriores:** Ninguna
+
+### Resultado
+**Estado final:** `pendiente`  
+**Decisiones tomadas:** Aplazado a post-MVP (Vincenzo, jul 2026): "lo veo tremendamente complejo como para retrasar el MVP".  
+**Efectos secundarios detectados:** —  
+**Archivos modificados:** —
+
+---
+
+### N7 — Graduación real al agotar los planes
+**Sección PRD:** §9.5 (gestión de salientes) / §13.3 (histórico permanente)  
+**Impacto:** Medio — sin urgencia inmediata, pero rompe la compartimentación cuando llegue  
+**Estado:** `pendiente` (roadmap)
+
+**Diagnóstico (verificado en código, jul 2026):**
+La duración de la especialidad **ya es configurable**: el número de planes ES la duración (4 planes = 4 años). Lo que falla es que **nadie se queda nunca sin plan**, por el clamp de `getPlanForUserOnDate`:
+
+```js
+const planIndex = Math.min(level - 1, promoConfig.planes.length - 1);   // ← clampa al último plan
+```
+
+Un R5 en una especialidad de 4 años **no** devuelve `null`: devuelve "Plan R4". Consecuencia: **se mezclaría con los R4 nuevos** en su rotación, cola de turnos, calendario y subasta — justo lo que no se quiere ("cuando empiecen los siguientes R4 no quiero que se mezclen con los salientes").
+
+Corolario: **`checkAutomaticGraduation` es código muerto**. Su condición `plan === null && getUserLevelOnDate(p, dk) > 0` es insatisfacible, porque `plan === null` ⟺ `level === 0`, que contradice `level > 0`. La graduación real hoy es **manual** (`graduarResidente`, la que exporta el Excel de despedida).
+
+**Comportamiento deseado (Vincenzo, jul 2026):**
+Al pasar el cambio de contrato de R4 sin que exista un plan R5: graduar al residente (o notificarle para que **acepte** su graduación) y mientras tanto bloquearle para coger guardias y usar el mercadillo (solo lectura), y sacarlo de la Rotación.
+
+**Lo que se arregla SOLO al quitar el clamp** (`if (level > planes.length) return null`), porque toda la Fase 1 cuelga del plan:
+- Fuera de la Rotación → `residentePerteneceAPlan` = false en todos los planes
+- No puede coger guardias → `openShiftModal` → `serviciosDisponibles = []`
+- Fuera de la cola de turnos → `getUserProgress` sin servicios → nunca tiene turno
+- **Revive `checkAutomaticGraduation`**: la condición imposible pasa a cumplirse
+
+**Lo que NO sale gratis:**
+1. **Mercadillo en solo lectura** — hay que gatearlo a mano (`canUserTakeShift`, modal de mercadillo); hoy no depende del plan.
+2. **Notificación + aceptación** — infraestructura N1 lista, pero falta un estado `pendiente_graduacion` y su flujo.
+3. **⚠️ La graduación no tiene fecha.** `state.graduados` es una **lista plana de nombres**: "graduado para siempre, en todos los meses". Graduar en junio 2029 y mirar marzo 2029 (cuando era R4 activo) le borraría de la lista de miembros de aquel mes — y el PRD §13.3 exige histórico permanente. **Ya existe el mecanismo correcto** y lo usa `getResidentesDePlan`: `estado: 'historico'` + `state.historialEventos[nombre].salida = 'YYYY-MM'`, que sí compara contra el mes consultado. La graduación debería apoyarse en eso en vez de en la lista plana.
+
+**Urgencia (jul 2026):** ninguna. MFyC tiene los 4 planes configurados (R3 y R4 como placeholders), así que Aura — que pasa a R3 en noviembre de 2026 por su cambio de contrato en noviembre — cae en un plan que existe y no se mezcla. El primer R5 real no llega hasta ~2029. **Aviso menor:** si el Plan R3 sigue sin servicios en noviembre, Aura simplemente no tendrá turnos (`getUserProgress` la da por terminada) hasta que se configure; no rompe nada.
+
+**Dependencias previas:** Ninguna  
+**Dependencias posteriores:** Ninguna
+
+### Resultado
+**Estado final:** `pendiente`  
+**Decisiones tomadas:** Aplazado (Vincenzo, jul 2026): "Tenemos tiempo".  
 **Efectos secundarios detectados:** —  
 **Archivos modificados:** —
 
