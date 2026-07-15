@@ -2498,6 +2498,8 @@ function renderMainCalendar() {
              html += `<button class="primary" style="padding:4px 8px; font-size:0.75rem; background:var(--fest); color:white;" onclick="ejecutarAsignacionForzosa(${y}, ${m}, '${af.svcNombre}')">⚡ Forzosa</button>`;
          }
        }
+       // 📋 N5 §8.5: propuesta de asignación con revisión previa — exclusiva del admin
+       if (isAdmin) html += `<button class="primary" style="padding:4px 8px; font-size:0.75rem; background:var(--dark); color:white;" onclick="abrirPropuestaMesModal(${y}, ${m})">📋 Proponer asignación</button>`;
        // El reset borra el mes de TODOS los planes → exclusivo del admin
        if (isAdmin) html += `<button class="danger" style="padding:4px 8px; font-size:0.75rem; background:var(--fest); color:white;" onclick="adminResetMonth(${y}, ${m})">⚠️ Reset Mes</button>`;
        html += `</div></div>`;
@@ -5565,6 +5567,298 @@ async /**
  * @param {number} m - 0-indexed
  * @param {string} targetSvcNombre - nombre del servicio a cubrir
  */
+// ============================================================
+// MÓDULO: PROPUESTA_ASIGNACION (N5 §8.5)
+// Exportar a: src/modules/propuestaAsignacion.js
+// Dependencias externas: promoConfig, state.shifts, state.excluidosSubastas
+// Helpers que usa: getResidentesActivosEnMes, residentePerteneceAPlan, getDayTag,
+//                  isServiceEnabledOnDate, getPlazasForDay, getIllegalShiftsForUser,
+//                  getHistoricoFestivosResidentes, hashHistorico, seededRandom,
+//                  registrarHuecoSinCandidato, insertNotificacion, saveState
+//
+// 🔮 BASE DE N6: este módulo es el esqueleto del optimizador con vacaciones. El motor es
+// GREEDY a propósito (sin vacaciones basta); N6 deberá sustituirlo por backtracking
+// "most-constrained-first" y añadir el informe de viabilidad completo. Para que ese salto
+// sea barato, TODA restricción sobre si alguien puede cubrir un hueco vive en un único
+// sitio: _candidatoElegible(). N6 solo tendrá que añadirle estaDeVacaciones().
+// ============================================================
+let _propuestaMes = null; // Propuesta en revisión (borrador en memoria; nada se persiste)
+
+/**
+ * Devuelve el mapa de históricos para un criterio de subasta (§8.4).
+ * Extraído de _getAnalisisFestivosImpl para poder reutilizarlo servicio a servicio.
+ * @returns {Object|null} mapa {residente: nº} o null si el criterio no se puede resolver
+ */
+function _getHistoricoParaCriterio(crit, targetSvc, svcNombre, planRef, y, m) {
+    const TODAS = ['laborable', 'vispera', 'fin_de_semana', 'festivo_intersemanal'];
+    if (crit === 'historico_festivos') return getHistoricoFestivosResidentes(y, m, ['fin_de_semana', 'festivo_intersemanal'], null, true);
+    if (crit === 'historico_laborables') return getHistoricoFestivosResidentes(y, m, ['laborable'], null, true);
+    if (crit === 'historico_intersemanales') return getHistoricoFestivosResidentes(y, m, ['festivo_intersemanal'], null, true);
+    if (crit === 'historico_total') return getHistoricoFestivosResidentes(y, m, TODAS, null, true);
+    if (crit === 'historico_servicio') return getHistoricoFestivosResidentes(y, m, TODAS, svcNombre, true);
+    if (crit === 'historico_servicio_dinamico') {
+        if (!planRef.servicios.some(s => s.nombre === targetSvc)) return null;
+        return getHistoricoFestivosResidentes(y, m, TODAS, targetSvc, true);
+    }
+    return null;
+}
+
+/**
+ * Ordena a los candidatos de un servicio según su criterio de subasta (§8.4): primero
+ * quien menos carga histórica acumula. Mismo desempate que la subasta real, incluido el
+ * shuffle con semilla derivada del histórico para tramos empatados (reproducible).
+ * @returns {{orden: string[], historico: Object|null}}
+ */
+function _ordenarCandidatosPorCriterio(residentes, svc, planRef, y, m) {
+    const hist = _getHistoricoParaCriterio(svc.subastaCriterio, svc.subastaCriterioServicio, svc.nombre, planRef, y, m);
+    let histDes = null, fallbackDes = false;
+    if (svc.subastaDesempate && svc.subastaDesempate !== 'aleatorio') {
+        histDes = _getHistoricoParaCriterio(svc.subastaDesempate, svc.subastaDesempateServicio, svc.nombre, planRef, y, m);
+        if (!histDes) fallbackDes = true;
+    }
+    // Sin criterio determinista → orden aleatorio reproducible (semilla del mes)
+    if (!hist || svc.subastaCriterio === 'aleatorio') {
+        const rng = seededRandom(y * 100 + m);
+        return { orden: [...residentes].sort(() => rng() - 0.5), historico: null };
+    }
+    const ordenados = [...residentes].sort((a, b) => {
+        const diff = (hist[a] || 0) - (hist[b] || 0);
+        if (diff !== 0) return diff;
+        if (histDes && !fallbackDes) {
+            const dd = (histDes[a] || 0) - (histDes[b] || 0);
+            if (dd !== 0) return dd;
+        }
+        return 0;
+    });
+    // Barajar los tramos empatados con semilla del histórico: mismo orden para todos
+    const semilla = hashHistorico(hist) ^ (histDes && !fallbackDes ? hashHistorico(histDes) : 0);
+    const rng = seededRandom(semilla);
+    const salida = [];
+    let i = 0;
+    while (i < ordenados.length) {
+        const pri = hist[ordenados[i]] || 0;
+        const des = (histDes && !fallbackDes) ? (histDes[ordenados[i]] || 0) : null;
+        const tramo = [];
+        while (i < ordenados.length) {
+            const r = ordenados[i];
+            if ((hist[r] || 0) !== pri) break;
+            if (des !== null && (histDes[r] || 0) !== des) break;
+            tramo.push(r); i++;
+        }
+        salida.push(...(tramo.length > 1 ? [...tramo].sort(() => rng() - 0.5) : tramo));
+    }
+    return { orden: salida, historico: hist };
+}
+
+/**
+ * Recorta shifts a una ventana alrededor del mes (±5 días). Las reglas de saliente solo
+ * alcanzan al día siguiente (y al lunes si la guardia es en sábado), así que ±5 días basta
+ * para detectar cualquier conflicto real.
+ *
+ * ⚡ Por qué existe: getIllegalShiftsForUser recorre el objeto ENTERO de shifts en cada
+ * llamada, y el motor la invoca (candidatos × huecos) veces — cientos. Sin recortar,
+ * escanearía años de histórico en cada comprobación y el modal tardaría segundos en abrir,
+ * empeorando cada año que pasa.
+ * @returns {Object} copia recortada (segura de mutar)
+ */
+function _recortarShiftsAlMes(shifts, y, m) {
+    const desde = new Date(y, m, 1); desde.setDate(desde.getDate() - 5);
+    const hasta = new Date(y, m + 1, 0); hasta.setDate(hasta.getDate() + 5);
+    const out = {};
+    for (const dk in (shifts || {})) {
+        const [yy, mm, dd] = dk.split('_').map(Number);
+        if (isNaN(yy) || isNaN(mm) || isNaN(dd)) continue;
+        const f = new Date(yy, mm - 1, dd);
+        if (f >= desde && f <= hasta) out[dk] = { ...shifts[dk] };
+    }
+    return out;
+}
+
+/**
+ * 🚦 ÚNICO punto de verdad sobre si un residente puede cubrir un hueco concreto.
+ * Mismas reglas que ejecutarAsignacionForzosa: no doblar guardia el mismo día y no violar
+ * descansos de saliente/entrante.
+ *
+ * 🔮 N6: aquí —y SOLO aquí— se añadirá `if (estaDeVacaciones(residente, dk)) return {ok:false, motivo:'Vacaciones'}`.
+ * Todo lo demás (motor, modal, confirmación) queda intacto.
+ *
+ * Nota: prueba mutando `shifts` y revirtiendo (no deep-copy) porque se llama cientos de
+ * veces; `shifts` siempre es la copia recortada que posee calcularPropuestaMes.
+ * @returns {{ok: boolean, motivo: string}}
+ */
+function _candidatoElegible(residente, dk, svc, shifts) {
+    if (shifts[dk]?.[residente]) return { ok: false, motivo: 'Ya tiene guardia ese día' };
+    const existiaDia = shifts[dk] !== undefined;
+    if (!existiaDia) shifts[dk] = {};
+    shifts[dk][residente] = svc.nombre;
+    let conflictos;
+    try {
+        conflictos = getIllegalShiftsForUser(residente, shifts);
+    } finally {
+        delete shifts[dk][residente];
+        if (!existiaDia) delete shifts[dk];
+    }
+    if (conflictos.length > 0) return { ok: false, motivo: `Descanso: ${conflictos[0]}` };
+    return { ok: true, motivo: '' };
+}
+
+/**
+ * Calcula la propuesta de reparto del mes para TODOS los servicios con subastaTrigger del
+ * plan (§8.5), rellenando solo los huecos vacíos. No toca state.shifts: trabaja sobre una
+ * copia simulada. Para cada hueco guarda además la lista de candidatos elegibles y los
+ * motivos de descarte — semilla del informe de viabilidad de N6.
+ * @returns {{filas: Object[], residentes: string[], planNombre: string}|null}
+ */
+function calcularPropuestaMes(y, m, planName) {
+    const planRef = (promoConfig.planes || []).find(p => p.nombre === planName);
+    if (!planRef || !planRef.servicios) return null;
+
+    const residentes = getResidentesActivosEnMes(y, m).filter(r =>
+        residentePerteneceAPlan(r, planName, y, m) &&
+        !(state.excluidosSubastas || []).includes(r));
+
+    const totalDias = getDaysInMonth(y, m);
+    // Copia recortada al mes ±5 días: rápida de escanear y segura de mutar (ver _recortarShiftsAlMes)
+    const simulated = _recortarShiftsAlMes(state.shifts, y, m);
+    const filas = [];
+
+    const serviciosOrdenados = [...planRef.servicios]
+        .filter(s => (s.subastaTrigger || []).length > 0)
+        .sort((a, b) => (a.ordenSubasta || 999) - (b.ordenSubasta || 999));
+
+    for (const svc of serviciosOrdenados) {
+        const { orden } = _ordenarCandidatosPorCriterio(residentes, svc, planRef, y, m);
+        const candidatos = [...orden];
+
+        for (let d = 1; d <= totalDias; d++) {
+            const dk = formatDateKey(y, m, d);
+            if (!svc.subastaTrigger.includes(getDayTag(y, m, d))) continue;
+            if (svc.requiereHabilitacion && !isServiceEnabledOnDate(svc.nombre, dk, planName)) continue;
+
+            // Ocupación actual del plan en ese día/servicio (los de otros planes no cuentan)
+            let ocupados = 0;
+            for (const u in (simulated[dk] || {})) {
+                if (simulated[dk][u] === svc.nombre && !u.startsWith('VRE')
+                    && residentePerteneceAPlan(u, planName, y, m)) ocupados++;
+            }
+            const needed = getPlazasForDay(svc, dk, planName);
+
+            for (let hueco = ocupados; hueco < needed; hueco++) {
+                const evaluados = candidatos.map(r => ({ n: r, ..._candidatoElegible(r, dk, svc, simulated) }));
+                const elegibles = evaluados.filter(e => e.ok).map(e => e.n);
+
+                if (elegibles.length === 0) {
+                    filas.push({
+                        dk, svc: svc.nombre, residente: null, elegibles: [],
+                        descartes: evaluados.map(e => ({ n: e.n, motivo: e.motivo })), tipo: 'imposible'
+                    });
+                    continue;
+                }
+                const elegido = elegibles[0]; // greedy: el primero del orden §8.4
+                if (!simulated[dk]) simulated[dk] = {};
+                simulated[dk][elegido] = svc.nombre;
+                filas.push({ dk, svc: svc.nombre, residente: elegido, elegibles, tipo: 'asignado' });
+                // Fairness: quien recibe pasa al final de la cola
+                candidatos.push(candidatos.splice(candidatos.indexOf(elegido), 1)[0]);
+            }
+        }
+    }
+    return { filas, residentes, planNombre: planName };
+}
+
+/**
+ * Abre el modal de revisión de la propuesta (§8.5). Exclusivo del admin. Nada se escribe
+ * en state.shifts hasta pulsar Confirmar; cada fila es editable.
+ */
+function abrirPropuestaMesModal(y, m) {
+    if (!isAdmin) return alert('⚠️ La propuesta de asignación es exclusiva del administrador.');
+    if (simulatedViewUser !== null) return alert('⚠️ Estás en modo visualización. Sal de la simulación para usar la propuesta.');
+    const planName = getCurrentRotPlan(formatDateKey(y, m, 1));
+    const propuesta = calcularPropuestaMes(y, m, planName);
+    if (!propuesta) return alert('No se ha podido resolver el plan visualizado.');
+    if (propuesta.filas.length === 0) return alert(`✅ No hay huecos vacíos en ${planName} para ${MONTHS[m]} ${y}. No hay nada que proponer.`);
+    _propuestaMes = { ...propuesta, y, m };
+
+    document.getElementById('propuesta-modal')?.remove();
+    const nAsignados = propuesta.filas.filter(f => f.tipo === 'asignado').length;
+    const nImposibles = propuesta.filas.filter(f => f.tipo === 'imposible').length;
+
+    const filasHtml = propuesta.filas.map((f, i) => {
+        const dia = parseInt(f.dk.split('_')[2], 10);
+        if (f.tipo === 'imposible') {
+            return `<div style="display:flex; align-items:center; gap:8px; padding:6px 4px; border-bottom:1px solid #f1f5f9; font-size:0.84rem; background:#fef2f2;">
+                <span style="min-width:34px; color:#64748b;">${dia}</span>
+                <span style="flex:1;"><b>${f.svc}</b></span>
+                <span style="color:#b91c1c; font-size:0.8rem;">🔴 Sin candidato legal (${f.descartes.length} descartados)</span>
+            </div>`;
+        }
+        return `<div style="display:flex; align-items:center; gap:8px; padding:6px 4px; border-bottom:1px solid #f1f5f9; font-size:0.84rem;">
+            <span style="min-width:34px; color:#64748b;">${dia}</span>
+            <span style="flex:1;"><b>${f.svc}</b></span>
+            <select id="prop-fila-${i}" style="margin:0; padding:3px; font-size:0.8rem; max-width:190px;">
+                ${f.elegibles.map(r => `<option value="${r}" ${r === f.residente ? 'selected' : ''}>${r}</option>`).join('')}
+                <option value="">— dejar sin asignar —</option>
+            </select>
+        </div>`;
+    }).join('');
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.id = 'propuesta-modal';
+    modal.innerHTML = `
+        <div class="modal" style="max-width:600px; text-align:left;">
+            <h3 style="margin-bottom:0.3rem;">📋 Propuesta de asignación — ${MONTHS[m]} ${y}</h3>
+            <p style="font-size:0.82rem; color:#64748b; margin-bottom:0.8rem;">
+                Plan <b>${planName}</b> · Rellena solo los <b>huecos vacíos</b> de los servicios con subasta, repartiendo por los criterios de justicia ya configurados (menor histórico primero) y respetando los descansos de saliente.
+                <b>Nada se guarda hasta que confirmes</b>, y puedes cambiar cualquier fila.
+            </p>
+            <div style="display:flex; gap:8px; margin-bottom:8px; font-size:0.8rem;">
+                <span style="background:#dcfce7; color:#166534; padding:3px 8px; border-radius:6px;">✅ ${nAsignados} asignables</span>
+                ${nImposibles > 0 ? `<span style="background:#fee2e2; color:#b91c1c; padding:3px 8px; border-radius:6px;">🔴 ${nImposibles} sin candidato</span>` : ''}
+            </div>
+            <div style="max-height:330px; overflow-y:auto; border:1px solid #e2e8f0; border-radius:8px; padding:6px;">${filasHtml}</div>
+            <div style="display:flex; gap:8px; margin-top:12px;">
+                <button class="primary" style="flex:1; background:var(--dark); color:white;" onclick="confirmarPropuestaMes()">✅ Aplicar propuesta</button>
+                <button onclick="document.getElementById('propuesta-modal').remove(); _propuestaMes = null;">Cancelar</button>
+            </div>
+        </div>`;
+    document.body.appendChild(modal);
+}
+
+/** Aplica la propuesta revisada: escribe en state.shifts, notifica y registra los imposibles (N2). */
+async function confirmarPropuestaMes() {
+    if (!_propuestaMes) return;
+    if (!isAdmin) return alert('⚠️ Solo el administrador puede aplicar la propuesta.');
+    const { filas, y, m, planNombre } = _propuestaMes;
+
+    // Recogemos lo que el admin haya dejado en cada desplegable
+    const aplicar = [];
+    filas.forEach((f, i) => {
+        if (f.tipo !== 'asignado') return;
+        const val = document.getElementById(`prop-fila-${i}`)?.value;
+        if (val) aplicar.push({ dk: f.dk, svc: f.svc, residente: val });
+    });
+    if (aplicar.length === 0) return alert('No hay ninguna asignación seleccionada.');
+    if (!confirm(`¿Aplicar ${aplicar.length} guardia(s) al calendario de ${planNombre} en ${MONTHS[m]} ${y}?`)) return;
+
+    for (const a of aplicar) {
+        if (!state.shifts[a.dk]) state.shifts[a.dk] = {};
+        state.shifts[a.dk][a.residente] = a.svc;
+        const p = globalProfiles.find(gp => gp.nombre_mostrar === a.residente);
+        if (p) insertNotificacion(p.id, 'guardia_forzada', { year: y, month: m, fecha: formatDK(a.dk), servicio: a.svc });
+    }
+    // 🕳️ N2: los huecos que nadie podía cubrir quedan registrados como evidencia
+    filas.filter(f => f.tipo === 'imposible').forEach(f => {
+        registrarHuecoSinCandidato(f.dk, f.svc, planNombre, y, m, f.descartes, 'propuesta');
+    });
+
+    document.getElementById('propuesta-modal')?.remove();
+    _propuestaMes = null;
+    await saveState();
+    renderAll();
+    alert(`✅ Propuesta aplicada: ${aplicar.length} guardia(s) asignadas en ${MONTHS[m]} ${y}.`);
+}
+
 /**
  * 🕳️ N2 — Registra de forma persistente un hueco que la asignación forzosa no pudo
  * cubrir: fecha, servicio, plan, candidatos evaluados con su motivo de descarte y
