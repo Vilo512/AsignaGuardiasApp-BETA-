@@ -3106,27 +3106,6 @@ function renderAdminAjustes() {
     </div>
   </div>`;
 
-  // ── 🎌 N4: Comunidad Autónoma para importación de festivos oficiales ──
-  {
-    const fr = promoConfig.festivosRegion || null;
-    html += `
-    <div class="cfg-card" style="border-left:4px solid #0891b2; margin-bottom:20px;">
-      <h3 style="margin-bottom:0.5rem; color:#0891b2;">🎌 Comunidad Autónoma para importar festivos</h3>
-      <p style="font-size:0.78rem; color:#94a3b8; margin:0 0 12px 0;">Se usa para importar festivos NACIONALES + AUTONÓMICOS automáticamente desde Admin → Calendario (fuente: Nager.Date, agregador público sin garantía oficial). Los festivos LOCALES del municipio (fiesta mayor, patrón...) no están cubiertos por esta fuente — añádelos a mano con el pincel de festivos tras importar.</p>
-      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
-        <div style="flex:1; min-width:220px;">
-          <label style="font-size:0.78rem; color:#64748b; display:block; margin-bottom:4px;">Comunidad Autónoma</label>
-          <select id="cfg-festivo-region" style="margin:0; width:100%;">
-            <option value="">-- Selecciona --</option>
-            ${FESTIVOS_CCAA_ES.map(c => `<option value="${c.codigo}" ${fr?.codigo === c.codigo ? 'selected' : ''}>${c.nombre}</option>`).join('')}
-          </select>
-        </div>
-        <button class="primary" style="background:#0891b2; height:38px;" onclick="guardarRegionFestivos()">💾 Guardar</button>
-      </div>
-      ${fr ? `<p style="font-size:0.78rem; color:#0891b2; margin-top:8px;">📍 Actual: <b>${fr.nombre}</b></p>` : ''}
-    </div>`;
-  }
-
   promoConfig.planes.forEach((plan, pIdx) => {
     html += `
     <details style="background:#f1f5f9; border:2px solid #cbd5e1; border-radius:12px; padding:15px; margin-bottom:20px;"><summary style="font-weight:bold; cursor:pointer; font-size:1.1rem; color:var(--dark);">👉 Desplegar/Ocultar: ${plan.nombre}</summary><div style="margin-top: 15px;">
@@ -3823,16 +3802,6 @@ function renderAdminCalendar() {
         nukeBtn.onclick = () => adminBorrarMesCompleto(y, m);
     }
 
-    // 🎌 N4: Importar festivos oficiales del municipio configurado (exclusivo admin)
-    if (isAdmin) {
-        let impBtn = document.getElementById('admin-import-festivos-btn');
-        if (!impBtn) {
-            document.getElementById('admin-nuke-btn').insertAdjacentHTML('afterend', `<button id="admin-import-festivos-btn" class="primary" style="background:#0891b2; padding:6px 10px; font-size:0.8rem; margin-left:6px;"></button>`);
-            impBtn = document.getElementById('admin-import-festivos-btn');
-        }
-        impBtn.textContent = `🎌 Importar festivos ${y}`;
-        impBtn.onclick = () => abrirImportarFestivosModal(y);
-    }
 
     // 🧭 N3: panel de patrón automático del pincel de habilitación activo
     let patronPanel = document.getElementById('patron-panel');
@@ -3861,7 +3830,38 @@ function renderAdminCalendar() {
         }
     }
 
-    
+    // 🎌 N4: panel de festivos oficiales (CCAA + año + importar), visible con el pincel
+    // de festivos activo — así toda la gestión de festivos vive donde se pintan.
+    let festPanel = document.getElementById('festivos-panel');
+    if (!festPanel) {
+        festPanel = document.createElement('div');
+        festPanel.id = 'festivos-panel';
+        festPanel.style.cssText = 'flex-basis:100%; margin-top:8px;';
+        document.getElementById('aview-calendario').appendChild(festPanel);
+    }
+    festPanel.style.display = 'none';
+    if (currentVal === 'festivos' && isAdmin) {
+        const _fr = promoConfig.festivosRegion || null;
+        const _years = [y - 1, y, y + 1, y + 2];
+        festPanel.innerHTML = `
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding:8px; background:white; border:1px dashed #cbd5e1; border-radius:6px;">
+                <label style="font-size:0.8rem; font-weight:bold; color:#475569;">🎌 Festivos oficiales:</label>
+                <select id="cfg-festivo-region" style="margin:0; padding:5px; font-size:0.85rem; min-width:190px;">
+                    <option value="">-- Comunidad Autónoma --</option>
+                    ${FESTIVOS_CCAA_ES.map(c => `<option value="${c.codigo}" ${_fr?.codigo === c.codigo ? 'selected' : ''}>${c.nombre}</option>`).join('')}
+                </select>
+                <button class="primary" style="padding:5px 10px; font-size:0.8rem;" onclick="guardarRegionFestivos()">💾 Guardar</button>
+                <span style="width:1px; height:22px; background:#e2e8f0;"></span>
+                <label style="font-size:0.8rem; color:#475569;">Año:</label>
+                <select id="import-festivos-year" style="margin:0; padding:5px; font-size:0.85rem;">
+                    ${_years.map(yy => `<option value="${yy}" ${yy === y ? 'selected' : ''}>${yy}</option>`).join('')}
+                </select>
+                <button class="primary" style="background:#0891b2; padding:5px 10px; font-size:0.8rem;" onclick="abrirImportarFestivosModal(parseInt(document.getElementById('import-festivos-year').value, 10))">✨ Importar festivos</button>
+                <span style="flex-basis:100%; font-size:0.72rem; color:#94a3b8;">${_fr ? `📍 Configurado: <b>${_fr.nombre}</b>. ` : '⚠️ Elige tu Comunidad Autónoma y pulsa Guardar antes de importar. '}Importa festivos nacionales + autonómicos del año elegido (fuente: Nager.Date, agregador público sin garantía oficial — revísalos antes de confirmar). Los festivos <b>LOCALES</b> de tu municipio (fiesta mayor, patrón...) no están cubiertos: píntalos a mano con este mismo pincel.</span>
+            </div>`;
+        festPanel.style.display = 'block';
+    }
+
     // 2. Pintado del calendario
     for(let i=0; i<getFirstDayOffset(y,m); i++) grid.innerHTML += `<div class="cal-cell empty"></div>`;
     
@@ -4014,8 +4014,8 @@ async function guardarRegionFestivos() {
     const { error } = await supabaseClient.from('promociones').update({ configuracion: promoConfig }).eq('id', currentUserProfile.promocion_id);
     if (error) { setStatus('Error ❌', true); return alert('Error al guardar: ' + error.message); }
     setStatus('Conectado ✅');
-    alert(`✅ Comunidad Autónoma guardada: ${nombre}.`);
-    renderAdminAjustes();
+    alert(`✅ Comunidad Autónoma guardada: ${nombre}. Ya puedes importar los festivos del año que elijas.`);
+    renderAdminCalendar();
 }
 
 /**
