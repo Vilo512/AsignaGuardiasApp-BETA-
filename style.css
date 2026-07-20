@@ -18,7 +18,9 @@
   --border-2:  #5f6368;   /* borde de énfasis            */
   --text:      #e8eaed;   /* texto primario              */
   --text-2:    #9aa0a6;   /* texto secundario            */
-  --text-3:    #5f6368;   /* terciario / deshabilitado   */
+  /* Terciario: #92979d es el SUELO para que siga pasando 4.5:1 sobre --surface.
+     Cualquier gris más apagado deja de ser apto para texto. */
+  --text-3:    #92979d;
 
   /* — Escala de espaciado — */
   --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px;
@@ -78,7 +80,7 @@
   .cal-header-center { text-align: center; }
   .cal-title { margin: 0; font-size: 1.1rem; }
   .cal-subtitle { font-size: 0.75rem; color: var(--text-2); font-weight: bold; }
-  .cal-filter-btn { margin-top: var(--sp-1); padding: 6px 12px; min-height: 36px; font-size: 0.75rem; border-radius: var(--r-pill); border: 1px solid var(--border-2); background: transparent; color: var(--text-2); }
+  .cal-filter-btn { margin-top: var(--sp-1); padding: 8px 14px; min-height: 44px; font-size: 0.75rem; border-radius: var(--r-pill); border: 1px solid var(--border-2); background: transparent; color: var(--text-2); }
   .cal-filter-btn.active { background: var(--surface-2); color: var(--text); border-color: var(--text-2); }
 
   .cal-header-nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
@@ -101,11 +103,12 @@
   .cal-cell.is-ped-ok { border-color: var(--pac-d); }
   .cal-cell.is-fest-ped { border-color: var(--fest-d); }
   .cal-cell.is-whitelisted { border-color: var(--ped-d); }
-  .cal-cell.locked-ped { opacity: 0.45; cursor: not-allowed; }
+  /* 0.65 y no menos: por debajo, el número del día cae de 4.5:1 */
+  .cal-cell.locked-ped { opacity: 0.65; cursor: not-allowed; }
 
   /* Contador de plazas multihueco (extraído del inline de app.js) */
   .cal-plazas { font-size: 0.6rem; position: absolute; bottom: 2px; right: 2px; display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
-  .cal-plaza { border-radius: 3px; padding: 0 3px; font-weight: 700; white-space: nowrap; }
+  .cal-plaza { border-radius: 3px; padding: 0 4px; font-size: 0.68rem; font-weight: 700; white-space: nowrap; }
 
   /* Shift Badges — el color de texto lo calcula contrastText() en app.js */
   .shift-badge { font-size: 0.66rem; padding: 3px 5px; border-radius: var(--r-sm); margin-bottom: 2px; font-weight: 700; letter-spacing: 0.2px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; justify-content: center; gap: 3px; }
@@ -280,14 +283,15 @@
     background: var(--surface-2);
     border: 1px solid var(--border);
     border-radius: var(--r-md);
-    padding: 6px 10px;
+    padding: 10px 12px;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
     color: var(--text);
     line-height: 1;
-    min-height: 36px;
+    min-height: 44px;
+    min-width: 44px;
   }
   .notif-bell-btn:hover { background: var(--border); }
   .notif-bell-btn svg { display: block; }
@@ -417,9 +421,11 @@
     margin-top: 6px;
   }
   .notif-item__actions button {
-    padding: 3px 10px !important;
-    font-size: 0.73rem !important;
-    min-height: unset;
+    padding: 6px 14px !important;
+    font-size: 0.76rem !important;
+    /* Acción crítica (aceptar/rechazar un cambio de guardia) pulsada con el
+       pulgar y poca luz: nunca por debajo del mínimo táctil. */
+    min-height: 44px;
   }
 
   .notif-item__dot {
@@ -447,14 +453,18 @@
 
     /* Rejilla: celdas más bajas pero con objetivo táctil holgado (~51x70px) */
     .cal-grid { gap: 2px; }
-    .cal-cell { min-height: 70px; padding: 3px; border-radius: var(--r-sm); }
+    /* 76px para que quepa el badge sin encoger su tipografía por debajo
+       de ~10.6px: las iniciales de quién está de guardia se leen de un vistazo. */
+    .cal-cell { min-height: 76px; padding: 3px; border-radius: var(--r-sm); }
     .cal-day-name { font-size: 0.62rem; padding: var(--sp-1) 0; }
     .day-number { width: 20px; height: 20px; font-size: 0.75rem; }
-    .shift-badge { font-size: 0.58rem; padding: 2px 3px; }
-    .shift-badge svg { width: 9px; height: 9px; }
+    .shift-badge { padding: 2px 4px; }
+    .shift-badge svg { width: 10px; height: 10px; }
 
     .cal-header-nav { gap: var(--sp-2); }
-    .cal-header-nav button { white-space: nowrap; padding: 0.5rem 0.7rem; font-size: 0.8rem; min-height: 40px; }
+    /* Solo los hijos directos (◀ Ant / Sig ▶): con `button` a secas se pisaba
+       por especificidad el min-height de .cal-filter-btn, que va anidado. */
+    .cal-header-nav > button { white-space: nowrap; padding: 0.5rem 0.7rem; font-size: 0.8rem; min-height: 40px; }
     .cal-title { font-size: 1rem; }
     .cal-subtitle { font-size: 0.68rem; }
     .cal-notice { font-size: 0.82rem; padding: var(--sp-2); }
