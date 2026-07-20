@@ -82,29 +82,59 @@
   .cal-filter-btn.active { background: var(--surface-2); color: var(--text); border-color: var(--text-2); }
 
   .cal-header-nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
-  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
-  .cal-day-name { text-align: center; font-weight: bold; font-size: 0.75rem; padding: 0.5rem 0; color: #64748b; }
-  .cal-cell { background: white; border: 1px solid #e2e8f0; border-radius: 6px; min-height: 90px; padding: 4px; display: flex; flex-direction: column; cursor: pointer; transition: border-color 0.2s; }
-  .cal-cell:hover { border-color: #94a3b8; }
-  .cal-cell.empty { background: transparent; border: none; cursor: default; }
-  .day-number { font-weight: bold; font-size: 0.85rem; margin-bottom: 2px; color: #475569; }
-  
-  /* Specific Calendar Modes */
-  .cal-cell.is-festivo { border: 2px solid var(--fest); background: #fee2e2; }
-  .cal-cell.is-ped-ok { background: #fef9c3; border-color: #fde047; }
-  .cal-cell.is-fest-ped { border: 2px solid var(--fest); background: linear-gradient(135deg, #fee2e2 50%, #fef9c3 50%); }
-  .cal-cell.is-whitelisted { background: #ecfdf5; border-color: var(--ped); } 
-  .cal-cell.locked-ped { background: #f1f5f9; opacity: 0.6; } 
-  
-  /* Shift Badges */
-  .shift-badge { font-size: 0.7rem; padding: 2px 4px; border-radius: 4px; color: white; margin-bottom: 2px; font-weight: 700; letter-spacing: 0.2px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: var(--sp-1); }
+  .cal-day-name { text-align: center; font-weight: 700; font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; padding: var(--sp-2) 0; color: var(--text-2); }
+  .cal-cell { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); min-height: 92px; padding: var(--sp-1); display: flex; flex-direction: column; gap: 2px; cursor: pointer; position: relative; transition: background 0.15s, border-color 0.15s; -webkit-tap-highlight-color: transparent; }
+  .cal-cell:hover { background: var(--surface-2); border-color: var(--border-2); }
+  .cal-cell:active { background: var(--border); }
+  .cal-cell.empty { background: transparent; border: none; cursor: default; min-height: 0; }
+  .day-number { font-weight: 700; font-size: 0.82rem; color: var(--text); line-height: 1; display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; flex-shrink: 0; }
+
+  /* Hoy — disco de acento, estilo Google Calendar */
+  .cal-cell.is-today { border-color: var(--adu-d); }
+  .cal-cell.is-today .day-number { background: var(--adu-d); color: var(--bg); border-radius: var(--r-pill); }
+
+  /* Specific Calendar Modes — el tinte de fondo lo aporta getCellBackgroundStyle */
+  .cal-cell.is-festivo { border-color: var(--fest-d); }
+  .cal-cell.is-festivo .day-number { color: var(--fest-d); }
+  .cal-cell.is-festivo.is-today .day-number { color: var(--bg); }
+  .cal-cell.is-ped-ok { border-color: var(--pac-d); }
+  .cal-cell.is-fest-ped { border-color: var(--fest-d); }
+  .cal-cell.is-whitelisted { border-color: var(--ped-d); }
+  .cal-cell.locked-ped { opacity: 0.45; cursor: not-allowed; }
+
+  /* Contador de plazas multihueco (extraído del inline de app.js) */
+  .cal-plazas { font-size: 0.6rem; position: absolute; bottom: 2px; right: 2px; display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+  .cal-plaza { border-radius: 3px; padding: 0 3px; font-weight: 700; white-space: nowrap; }
+
+  /* Shift Badges — el color de texto lo calcula contrastText() en app.js */
+  .shift-badge { font-size: 0.66rem; padding: 3px 5px; border-radius: var(--r-sm); margin-bottom: 2px; font-weight: 700; letter-spacing: 0.2px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; justify-content: center; gap: 3px; }
+  .shift-badge svg { width: 11px; height: 11px; flex-shrink: 0; }
   .bg-vre { background: #94a3b8 !important; }
 
   /* Modals & Config */
   .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); display: flex; justify-content: center; align-items: center; z-index: 1000; }
   .modal { background: var(--surface); color: var(--text); border: 1px solid var(--border); padding: 1.5rem; border-radius: var(--r-lg); width: 90%; max-width: 550px; max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-2); }
-  .shift-option { display: flex; flex-direction: column; padding: 0.75rem; border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 0.5rem; background: var(--light); }
+  .shift-option { display: flex; flex-direction: column; padding: 0.75rem; border: 1px solid var(--border); border-radius: var(--r-md); margin-bottom: var(--sp-2); background: var(--surface-2); }
   .shift-option-header { display: flex; justify-content: space-between; align-items: flex-start; width: 100%; }
+
+  /* ============================================================
+     BOTTOM SHEET — panel de día (Paso 3). En escritorio se comporta
+     como diálogo centrado; en móvil sube desde abajo.
+     ============================================================ */
+  .svc-chip { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: var(--r-pill); font-size: 0.8rem; font-weight: 700; letter-spacing: 0.2px; }
+  .sheet__grip { display: none; }
+  .sheet__title { margin: 0 0 var(--sp-1); font-size: 1.05rem; }
+  .sheet__mode { margin-bottom: var(--sp-4); font-weight: 700; font-size: 0.85rem; }
+  .sheet__mode--plain { color: var(--text-2); font-weight: 400; }
+  .sheet__footer { display: flex; justify-content: flex-end; margin-top: var(--sp-4); }
+  .sheet__close { min-height: 44px; padding: 0 var(--sp-5); }
+  /* Titular asignado (vista admin/delegado) */
+  .sheet__holder { background: var(--surface); border: 1px solid var(--border); padding: var(--sp-3); border-radius: var(--r-md); margin-top: var(--sp-2); }
+  /* Tu guardia elegida — se destaca con el acento PAC, dark-safe */
+  .sheet__mine { display: flex; flex-direction: column; gap: 6px; margin-top: var(--sp-2); background: rgba(251,191,36,0.10); padding: var(--sp-3); border-radius: var(--r-md); border: 1px solid var(--pac-d); }
+
+  @keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
   
   .rot-group { background: var(--light); padding: 1rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid #e2e8f0; }
   .editor-row { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
@@ -400,4 +430,50 @@
     flex-shrink: 0;
     align-self: center;
     margin-left: 4px;
+  }
+
+  /* ============================================================
+     RESPONSIVE — el calendario se juzga primero en móvil
+     ============================================================ */
+  @media (max-width: 640px) {
+    body { padding: 0; }
+    .header { padding: var(--sp-3); }
+    .header h2 { font-size: 1rem !important; }
+    .container { margin: var(--sp-2) auto; padding: 0 var(--sp-2); }
+    .card { padding: var(--sp-3); border-radius: var(--r-md); }
+
+    .tabs { gap: var(--sp-1); }
+    .tab { padding: 0.6rem 0.9rem; font-size: 0.82rem; }
+
+    /* Rejilla: celdas más bajas pero con objetivo táctil holgado (~51x70px) */
+    .cal-grid { gap: 2px; }
+    .cal-cell { min-height: 70px; padding: 3px; border-radius: var(--r-sm); }
+    .cal-day-name { font-size: 0.62rem; padding: var(--sp-1) 0; }
+    .day-number { width: 20px; height: 20px; font-size: 0.75rem; }
+    .shift-badge { font-size: 0.58rem; padding: 2px 3px; }
+    .shift-badge svg { width: 9px; height: 9px; }
+
+    .cal-header-nav { gap: var(--sp-2); }
+    .cal-header-nav button { white-space: nowrap; padding: 0.5rem 0.7rem; font-size: 0.8rem; min-height: 40px; }
+    .cal-title { font-size: 1rem; }
+    .cal-subtitle { font-size: 0.68rem; }
+    .cal-notice { font-size: 0.82rem; padding: var(--sp-2); }
+
+    .notif-panel { right: var(--sp-2); left: var(--sp-2); width: auto; max-width: none; }
+
+    /* El panel de día se convierte en bottom sheet: sube desde abajo,
+       al alcance del pulgar, con asa de arrastre y acciones a ancho completo. */
+    .sheet-overlay { align-items: flex-end; }
+    .sheet {
+      width: 100%; max-width: none; max-height: 88vh;
+      border-radius: var(--r-xl) var(--r-xl) 0 0;
+      border-bottom: none;
+      padding: var(--sp-2) var(--sp-4) var(--sp-5);
+      animation: sheet-up 0.22s ease-out;
+    }
+    .sheet__grip { display: block; width: 40px; height: 4px; border-radius: var(--r-pill); background: var(--border-2); margin: var(--sp-2) auto var(--sp-3); }
+    .sheet__footer { position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--border); padding-top: var(--sp-3); margin-top: var(--sp-3); }
+    .sheet__close { width: 100%; }
+    /* Objetivos táctiles holgados en las acciones del día */
+    .shift-option button { min-height: 44px; }
   }

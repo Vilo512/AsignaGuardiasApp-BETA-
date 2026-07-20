@@ -13,7 +13,7 @@ function getCellBackgroundStyle(dk, y, m, d, filterLevel = 'ALL') {
     
     // Si es festivo
     if (state.festivos[dk] || isWeekend) {
-        colors.push('#fee2e2'); // Rojo clarito
+        colors.push('rgba(248,113,113,0.16)'); // 🎨 tinte rojo translúcido, legible sobre --surface
     }
     
     // Si hay servicios habilitados
@@ -2353,6 +2353,44 @@ function getServiceColor(svcName) {
 }
 
 /**
+ * 🎨 Color de texto legible sobre un svc.color cualquiera (rediseño Paso 3).
+ * Blanco por defecto — conserva el look blanco-sobre-color de siempre —, y solo
+ * cae a casi-negro cuando el blanco no alcanza 3:1 (umbral de texto en negrita).
+ * Así cualquier hex que elija el usuario en su plan queda legible.
+ * @param {string} hex - color de servicio, formato #rrggbb
+ * @returns {string} '#ffffff' o '#202124'
+ */
+function contrastText(hex) {
+    if (typeof hex !== 'string') return '#ffffff';
+    const c = hex.replace('#', '');
+    if (c.length !== 6) return '#ffffff';
+    const r = parseInt(c.substr(0, 2), 16), g = parseInt(c.substr(2, 2), 16), b = parseInt(c.substr(4, 2), 16);
+    if ([r, g, b].some(isNaN)) return '#ffffff';
+    const lin = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    const L = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    return (1.05 / (L + 0.05)) >= 3 ? '#ffffff' : '#202124';
+}
+
+/**
+ * 🎨 Iconos SVG inline temables (rediseño Paso 3). Heredan currentColor, así que
+ * se adaptan solos al color de texto calculado del chip o al token del tema.
+ * De momento solo los usa la vista calendario; el resto migra en el Paso 6.
+ * @param {string} name
+ * @returns {string} markup SVG
+ */
+function icon(name) {
+    const paths = {
+        user: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+        lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+        check: '<path d="M20 6 9 17l-5-5"/>',
+        x: '<path d="M18 6 6 18M6 6l12 12"/>',
+        calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>'
+    };
+    if (!paths[name]) return '';
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
+}
+
+/**
  * Devuelve true si el servicio está habilitado para ese día (consulta state.habilitaciones y pedWhitelist).
  * Pasar siempre planName para evitar el fallback legacy de búsqueda por nombre.
  * @param {string} svcName
@@ -2635,17 +2673,22 @@ function renderMainCalendar() {
   const planVistaCtx = getPlanVistaContext(y, m);
   const userLevelName = planVistaCtx ? planVistaCtx.planName : 'ALL';
 
+  // 🎨 Paso 3: día de hoy, para resaltarlo en la rejilla
+  const _hoy = new Date();
+  const hoyKey = formatDateKey(_hoy.getFullYear(), _hoy.getMonth(), _hoy.getDate());
+
   for(let d=1; d<=getDaysInMonth(y,m); d++) {
     const dateKey = formatDateKey(y, m, d);
     const dayShifts = state.shifts[dateKey] || {};
     const isFest = state.festivos[dateKey];
-    
+
     // Verificación de si el día está habilitado (para la clase CSS)
     // Nota: Aquí usamos una comprobación genérica ya que no estamos en el contexto de un solo servicio
     const cell = document.createElement('div');
-    
+
     let cClass = 'cal-cell';
     if (isFest) cClass += ' is-festivo';
+    if (dateKey === hoyKey) cClass += ' is-today';
     cell.className = cClass;
     const bgStyle = getCellBackgroundStyle(dateKey, y, m, d, userLevelName);
     if (bgStyle) cell.setAttribute('style', bgStyle);
@@ -2661,7 +2704,7 @@ function renderMainCalendar() {
             dayShifts[u] === svc.nombre && esTitularVisibleEnPlan(u, svc.nombre, planVistaCtx));
         if (showOnlyMine && (simulatedViewUser || loggedInUser)) assigned = assigned.filter(u => u === (simulatedViewUser ?? loggedInUser));
         assigned.forEach(u => {
-            html += `<div class="shift-badge" style="background:${svc.color};">👤 ${getInitials(u)}</div>`;
+            html += `<div class="shift-badge" style="background:${svc.color}; color:${contrastText(svc.color)};">${icon('user')}${getInitials(u)}</div>`;
         });
         // 🧭 B7: plan explícito — los objetos de getAllUniqueServices pertenecen por
         // identidad al primer plan con ese nombre, no necesariamente al visualizado
@@ -2676,11 +2719,11 @@ function renderMainCalendar() {
     cell.innerHTML = html;
 
     if (multihuecoItems.length > 0) {
-        cell.style.position = 'relative';
         const badgeDiv = document.createElement('div');
-        badgeDiv.setAttribute('style', 'font-size:0.6rem; background:rgba(255,255,255,0.7); border-radius:3px; padding:1px 4px; position:absolute; bottom:2px; right:2px; display:flex; flex-direction:column; align-items:flex-end; gap:1px;');
+        badgeDiv.className = 'cal-plazas';
+        // 🎨 mini-chip: svc.color de fondo con texto de contraste, nunca color como texto
         badgeDiv.innerHTML = multihuecoItems.map(item =>
-            `<span style="color:${item.color}; font-weight:bold; white-space:nowrap;">${item.filled}/${item.pd}</span>`
+            `<span class="cal-plaza" style="background:${item.color}; color:${contrastText(item.color)};">${item.filled}/${item.pd}</span>`
         ).join('');
         cell.appendChild(badgeDiv);
     }
@@ -2740,16 +2783,24 @@ function openShiftModal(y, m, d, dateKey) {
   const pDataFull = getUserProgress(viewUser, y, m).progress;
   const theTag = getDayTag(y, m, d);
 
-  const modal = document.createElement('div'); modal.className = 'modal-overlay'; modal.id = 'shift-modal';
-  let html = `<div class="modal"><h3 style="margin-bottom:0.5rem;">${d} de ${MONTHS[m]} ${y}</h3>`;
-  if (simulatedViewUser !== null) html += `<p style="margin-bottom:1.5rem; color:#7c3aed; font-weight:bold;">👁 Viendo como: ${simulatedViewUser}</p>`;
-  else if (isAdmin) html += `<p style="margin-bottom:1.5rem; color:var(--fest); font-weight:bold;">👑 MODO ADMIN (Control Total)</p>`;
-  else if (isDelegado) html += `<p style="margin-bottom:1.5rem; color:var(--adu); font-weight:bold;">⭐ MODO DELEGADO</p>`;
-  else html += `<p style="margin-bottom:1.5rem; color:#64748b; font-size:0.9rem;">Usuario actual: <b>${loggedInUser}</b> (Evaluando: ${myPlanOnDate ? myPlanOnDate.nombre : 'Sin Plan'})</p>`;
+  // 🎨 Paso 3: el modal centrado pasa a ser bottom sheet (sube desde abajo, al
+  // alcance del pulgar). Solo cambia cómo se DIBUJA el día: toggleShift y el resto
+  // de la lógica de asignación quedan intactos.
+  const modal = document.createElement('div'); modal.className = 'modal-overlay sheet-overlay'; modal.id = 'shift-modal';
+  let html = `<div class="modal sheet" role="dialog" aria-modal="true">
+    <div class="sheet__grip" aria-hidden="true"></div>
+    <h3 class="sheet__title">${d} de ${MONTHS[m]} ${y}</h3>`;
+  if (simulatedViewUser !== null) html += `<p class="sheet__mode" style="color:var(--merc-d);">👁 Viendo como: ${simulatedViewUser}</p>`;
+  else if (isAdmin) html += `<p class="sheet__mode" style="color:var(--fest-d);">👑 MODO ADMIN (Control Total)</p>`;
+  else if (isDelegado) html += `<p class="sheet__mode" style="color:var(--adu-d);">⭐ MODO DELEGADO</p>`;
+  else html += `<p class="sheet__mode sheet__mode--plain">Usuario actual: <b>${loggedInUser}</b> (Evaluando: ${myPlanOnDate ? myPlanOnDate.nombre : 'Sin Plan'})</p>`;
   
   // Cambiamos el bucle para que recorra SOLO tus servicios autorizados para esta fecha
 serviciosDisponibles.forEach((svc, svcIdx) => {
-    html += `<div class="shift-option" style="flex-direction:column; align-items:stretch;"><div class="shift-option-header"><strong style="color:${svc.color};">${svc.nombre}</strong></div>`;
+    // 🎨 Paso 3 (§3.1): el nombre del servicio va como CHIP con texto de contraste.
+    // Antes se pintaba con svc.color como color de texto: sobre fondo oscuro, un
+    // color de servicio oscuro se volvía ilegible.
+    html += `<div class="shift-option" style="flex-direction:column; align-items:stretch;"><div class="shift-option-header"><span class="svc-chip" style="background:${svc.color}; color:${contrastText(svc.color)};">${svc.nombre}</span></div>`;
     // 🧭 B4: los titulares se filtran con el mismo criterio de plan que el calendario
     const holders = Object.keys(dayShifts || {}).filter(u =>
         dayShifts[u] === svc.nombre && esTitularVisibleEnPlan(u, svc.nombre, planCtxModal));
@@ -2759,20 +2810,20 @@ serviciosDisponibles.forEach((svc, svcIdx) => {
 holders.forEach(h => {
     let currentMode = state.shiftModifiers?.[dateKey]?.[h]?.tipo || 'normal';
     const modeLabels = { normal: 'Guardia Normal', partida_primera: 'Partida Diurna (50% H / Sin Saliente)', partida_segunda: 'Partida Nocturna (50% H / Con Saliente)' };
-    html += `<div style="background:#f8fafc; border:1px solid #e2e8f0; padding:10px; border-radius:6px; margin-top:8px;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-            <span style="font-size:0.85rem; color:#64748b;">Asignado: <b>${h}</b></span>
+    html += `<div class="sheet__holder">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:8px;">
+            <span style="font-size:0.85rem; color:var(--text-2);">Asignado: <b style="color:var(--text);">${h}</b></span>
             ${esGestorModal ? `<button class="danger icon-btn" onclick="adminForceRemove('${dateKey}', '${h}', ${y}, ${m}, ${d})">Quitar</button>` : ''}
         </div>`;
     if (esGestorModal) {
-        html += `<label style="font-size:0.75rem; color:#475569; display:block; margin-bottom:2px;">Regimen de Guardia:</label>
-        <select onchange="updateShiftMode('${dateKey}', '${h}', this.value)" style="margin:0; padding:4px; font-size:0.8rem; width:100%; background:white;">
+        html += `<label style="font-size:0.75rem; color:var(--text-2); display:block; margin-bottom:2px;">Regimen de Guardia:</label>
+        <select onchange="updateShiftMode('${dateKey}', '${h}', this.value)" style="margin:0; padding:4px; font-size:0.8rem; width:100%;">
             <option value="normal" ${currentMode === 'normal' ? 'selected' : ''}>Guardia Normal</option>
             <option value="partida_primera" ${currentMode === 'partida_primera' ? 'selected' : ''}>Partida Diurna (50% H / Sin Saliente)</option>
             <option value="partida_segunda" ${currentMode === 'partida_segunda' ? 'selected' : ''}>Partida Nocturna (50% H / Con Saliente)</option>
         </select>`;
     } else {
-        html += `<span style="font-size:0.75rem; color:#94a3b8;">Régimen: ${modeLabels[currentMode] || currentMode} (solo lectura: no es tu plan)</span>`;
+        html += `<span style="font-size:0.75rem; color:var(--text-3);">Régimen: ${modeLabels[currentMode] || currentMode} (solo lectura: no es tu plan)</span>`;
     }
     html += `</div>`;
 	}); // ⚠️ ESTE CIERRE ES EL QUE HABÍAS BORRADO
@@ -2809,14 +2860,14 @@ holders.forEach(h => {
 // B) INTERFAZ PARA EL RESIDENTE LOGUEADO
 if (isMine) {
     let currentMode = state.shiftModifiers?.[dateKey]?.[viewUser]?.tipo || 'normal';
-    html += `<div style="display:flex; flex-direction:column; gap:6px; margin-top:8px; background:#fffbeb; padding:10px; border-radius:6px; border:1px solid #fde047;">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-            <span style="font-size:0.85rem; color:#713f12;"><b>Tu Guardia Seleccionada</b></span>
+    html += `<div class="sheet__mine">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+            <span style="font-size:0.85rem; color:var(--pac-d);"><b>Tu Guardia Seleccionada</b></span>
             <button class="danger" ${simulatedViewUser !== null ? 'disabled style="opacity:0.4"' : ''} onclick="toggleShift('${dateKey}', '${svc.nombre}')">Quitar</button>
         </div>
         <div style="margin-top:4px;">
-            <label style="font-size:0.75rem; color:#713f12; display:block; margin-bottom:2px; font-weight:bold;">Ajustar Modalidad:</label>
-            <select ${simulatedViewUser !== null ? 'disabled' : `onchange="updateShiftMode('${dateKey}', '${viewUser}', this.value)"`} style="margin:0; padding:6px; font-size:0.8rem; width:100%; background:white; border:1px solid #ca8a04; border-radius:4px;">
+            <label style="font-size:0.75rem; color:var(--pac-d); display:block; margin-bottom:2px; font-weight:bold;">Ajustar Modalidad:</label>
+            <select ${simulatedViewUser !== null ? 'disabled' : `onchange="updateShiftMode('${dateKey}', '${viewUser}', this.value)"`} style="margin:0; padding:6px; font-size:0.8rem; width:100%;">
                 <option value="normal" ${currentMode === 'normal' ? 'selected' : ''}>Guardia Normal</option>
                 <option value="partida_primera" ${currentMode === 'partida_primera' ? 'selected' : ''}>Partida Diurna (50% Horas / Sin Saliente)</option>
                 <option value="partida_segunda" ${currentMode === 'partida_segunda' ? 'selected' : ''}>Partida Nocturna (50% Horas / Con Saliente)</option>
@@ -2824,14 +2875,16 @@ if (isMine) {
         </div>
     </div>`;
 } else {
-            html += `<div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;"><span style="font-size:0.85rem; color:${isIllegal && !isMine ? 'var(--fest)' : '#64748b'}; font-weight:${isIllegal && !isMine ? 'bold' : 'normal'}">${reason || occStr}</span>`;
+            html += `<div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; gap:8px;"><span style="font-size:0.85rem; color:${isIllegal && !isMine ? 'var(--fest-d)' : 'var(--text-2)'}; font-weight:${isIllegal && !isMine ? 'bold' : 'normal'}">${reason || occStr}</span>`;
             html += `<button class="primary" ${(disabled || simulatedViewUser !== null) ? 'disabled style="opacity:0.4"' : ''} onclick="toggleShift('${dateKey}', '${svc.nombre}')">Elegir</button></div>`;
         }
     }
     html += `</div>`;
   });
-  html += `<div style="text-align:right; margin-top:1rem;"><button onclick="document.getElementById('shift-modal').remove()">Cerrar</button></div></div>`;
+  html += `<div class="sheet__footer"><button class="sheet__close" onclick="document.getElementById('shift-modal').remove()">Cerrar</button></div></div>`;
   modal.innerHTML = html; document.body.appendChild(modal);
+  // 🎨 Paso 3: tocar fuera del panel lo cierra (patrón bottom sheet)
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
 }
 
 /**
