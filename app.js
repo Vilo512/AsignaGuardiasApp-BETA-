@@ -2305,11 +2305,13 @@ function toggleFilter() {
   if (!loggedInUser) { alert("⚠️ Identifícate primero arriba a la derecha para poder filtrar tus guardias."); return; }
   showOnlyMine = !showOnlyMine;
   const btnMain = document.getElementById('btn-filter'); const btnMerc = document.getElementById('btn-filter-merc');
+  // 🎨 Rediseño Paso 2: el botón del calendario usa clase (.cal-filter-btn.active),
+  // no estilos inline. El del mercadillo sigue inline hasta el Paso 5.
   if (showOnlyMine) {
-    if(btnMain) { btnMain.style.background = 'var(--dark)'; btnMain.style.color = 'white'; btnMain.innerHTML = '👁️ Viendo SOLO las mías'; }
+    if(btnMain) { btnMain.classList.add('active'); btnMain.innerHTML = '👁️ Viendo SOLO las mías'; }
     if(btnMerc) { btnMerc.style.background = 'var(--merc)'; btnMerc.style.color = 'white'; btnMerc.innerHTML = '👁️ Viendo SOLO las mías'; }
   } else {
-    if(btnMain) { btnMain.style.background = 'transparent'; btnMain.style.color = 'var(--dark)'; btnMain.innerHTML = '👁️ Ver solo mis guardias'; }
+    if(btnMain) { btnMain.classList.remove('active'); btnMain.innerHTML = '👁️ Ver solo mis guardias'; }
     if(btnMerc) { btnMerc.style.background = 'transparent'; btnMerc.style.color = 'var(--merc)'; btnMerc.innerHTML = '👁️ Ver solo mis guardias'; }
   }
   checkAutomaticGraduation();
