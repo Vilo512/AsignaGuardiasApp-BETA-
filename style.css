@@ -35,6 +35,13 @@
   /* — Acentos de chrome, dark-safe: mismo significado que los legacy,
        legibles como texto/borde sobre --bg. Reemplazan a los legacy
        cuando se propague el tema (pasos posteriores). — */
+  /* Fondos de botón sólidos. OBLIGATORIO que funcionen con texto BLANCO:
+     ~26 sitios de app.js sobrescriben solo el `background` inline y heredan
+     el color de texto de la clase. Si aquí se pone un fondo claro con texto
+     oscuro, esos botones quedan con texto invisible. Ver auditoría pre-merge. */
+  --btn-primary: #1565c0;   /* blanco encima: 5.6:1 (con #1a73e8 quedaba en 4.51, sin margen) */
+  --btn-merc:    #7c3aed;   /* blanco encima: 5.7:1 */
+
   --ped-d:  #34d399;   /* pediatría   */
   --adu-d:  #60a5fa;   /* adultos     */
   --pac-d:  #fbbf24;   /* PAC         */
@@ -67,9 +74,12 @@
   /* Forms & Buttons */
   button { padding: 0.6rem 1rem; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; font-weight: 500; transition: opacity 0.2s; }
   button:hover { opacity: 0.9; }
-  button.primary { background: var(--adu-d); color: var(--bg); border: none; font-weight: 600; }
+  /* El texto va en blanco a propósito: no cambiar sin revisar los ~26 botones
+     de app.js que sobrescriben el background inline (var(--dark), #7c3aed,
+     getServiceColor()...) y dependen de heredar blanco. */
+  button.primary { background: var(--btn-primary); color: #fff; border: none; font-weight: 600; }
   button.danger { background: transparent; color: var(--fest-d); border-color: var(--fest-d); }
-  button.merc { background: var(--merc-d); color: var(--bg); border: none; font-weight: 600; }
+  button.merc { background: var(--btn-merc); color: #fff; border: none; font-weight: 600; }
   button.icon-btn { padding: 4px 8px; font-size: 0.85rem; border-radius: var(--r-sm); }
   input, select { padding: 0.6rem; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--surface-2); color: var(--text); width: 100%; margin-bottom: 1rem; }
 
@@ -118,6 +128,23 @@
   /* Modals & Config */
   .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); display: flex; justify-content: center; align-items: center; z-index: 1000; }
   .modal { background: var(--surface); color: var(--text); border: 1px solid var(--border); padding: 1.5rem; border-radius: var(--r-lg); width: 90%; max-width: 550px; max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-2); }
+  /* ============================================================
+     MODALES AÚN NO MIGRADOS — crear promoción (app.js:809), mercadillo
+     (app.js:3089), importar festivos (app.js:4135) y propuesta de mes
+     (app.js:5864). Su contenido son estilos inline del tema claro
+     (#64748b, #f8fafc, background:white...). Hasta que les toque su capa
+     (Pasos 5-6) se aíslan en contexto CLARO y legible, en lugar de
+     dejarlos con texto a ~2.9:1 sobre fondo oscuro.
+     El panel de día lleva .sheet y queda excluido: ese sí es oscuro.
+     ============================================================ */
+  .modal:not(.sheet) { background: #ffffff; color: #334155; border-color: #e2e8f0; }
+  .modal:not(.sheet) h2, .modal:not(.sheet) h3, .modal:not(.sheet) h4 { color: #1e293b; }
+  .modal:not(.sheet) button { background: #ffffff; color: #334155; border-color: #cbd5e1; }
+  .modal:not(.sheet) button.primary { background: var(--btn-primary); color: #fff; border-color: transparent; }
+  .modal:not(.sheet) button.merc { background: var(--btn-merc); color: #fff; border-color: transparent; }
+  .modal:not(.sheet) button.danger { background: #ffffff; color: #dc2626; border-color: #dc2626; }
+  .modal:not(.sheet) input, .modal:not(.sheet) select, .modal:not(.sheet) textarea { background: #ffffff; color: #334155; border-color: #cbd5e1; }
+
   .shift-option { display: flex; flex-direction: column; padding: 0.75rem; border: 1px solid var(--border); border-radius: var(--r-md); margin-bottom: var(--sp-2); background: var(--surface-2); }
   .shift-option-header { display: flex; justify-content: space-between; align-items: flex-start; width: 100%; }
 
