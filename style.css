@@ -120,8 +120,12 @@
   .cal-dayrow { display: flex; align-items: center; gap: 4px; min-width: 0; }
   /* Contador de plazas: texto suelto junto al día ("11 1/2"), SIN recuadro.
      En esquina flotante absoluta se solapaba con las etiquetas de nombre. */
-  .cal-plazas { display: flex; gap: 5px; min-width: 0; overflow: hidden; }
-  .cal-plaza { font-size: 0.66rem; font-weight: 700; line-height: 1; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .cal-plazas { display: flex; gap: 6px; min-width: 0; overflow: hidden; }
+  .cal-plaza { display: inline-flex; align-items: center; gap: 3px; font-size: 0.66rem; font-weight: 700; line-height: 1; color: var(--text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  /* El relleno es el svc.color EXACTO (dato del plan, sin derivar). El aro claro
+     garantiza que un color oscuro no se pierda sobre el fondo oscuro sin que
+     haya que tocar el color en sí. */
+  .cal-plaza__dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(232,234,237,0.45); }
 
   /* Shift Badges — el color de texto lo calcula contrastText() en app.js */
   .shift-badge { font-size: 0.66rem; padding: 3px 5px; border-radius: var(--r-sm); margin-bottom: 2px; font-weight: 700; letter-spacing: 0.2px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; justify-content: center; gap: 3px; }

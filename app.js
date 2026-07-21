@@ -2372,61 +2372,6 @@ function contrastText(hex) {
 }
 
 /**
- * 🎨 Variante de un svc.color utilizable como TEXTO sobre las superficies oscuras.
- * Conserva el TONO del servicio (para que el dato siga "correlacionando" con él)
- * y sube solo la luminosidad hasta cruzar 4.5:1 contra --surface-2.
- * §3.1: un svc.color crudo NUNCA puede asumirse legible como texto sobre oscuro
- * — un azul marino o un granate se perderían por completo.
- * @param {string} hex - color de servicio, formato #rrggbb
- * @returns {string} hex del mismo tono, aclarado lo justo para ser legible
- */
-function svcTextOnDark(hex) {
-    const c = (typeof hex === 'string' ? hex : '').replace('#', '');
-    if (c.length !== 6) return '#e8eaed';
-    const r0 = parseInt(c.substr(0, 2), 16) / 255,
-          g0 = parseInt(c.substr(2, 2), 16) / 255,
-          b0 = parseInt(c.substr(4, 2), 16) / 255;
-    if ([r0, g0, b0].some(isNaN)) return '#e8eaed';
-
-    // RGB -> HSL
-    const max = Math.max(r0, g0, b0), min = Math.min(r0, g0, b0);
-    let h = 0, s = 0; const lBase = (max + min) / 2;
-    if (max !== min) {
-        const dd = max - min;
-        s = lBase > 0.5 ? dd / (2 - max - min) : dd / (max + min);
-        if (max === r0) h = (g0 - b0) / dd + (g0 < b0 ? 6 : 0);
-        else if (max === g0) h = (b0 - r0) / dd + 2;
-        else h = (r0 - g0) / dd + 4;
-        h /= 6;
-    }
-    const hue2rgb = (p, q, t) => {
-        if (t < 0) t += 1; if (t > 1) t -= 1;
-        if (t < 1 / 6) return p + (q - p) * 6 * t;
-        if (t < 1 / 2) return q;
-        if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-        return p;
-    };
-    const toRgb = (hh, ss, ll) => {
-        if (ss === 0) return [ll, ll, ll];
-        const q = ll < 0.5 ? ll * (1 + ss) : ll + ss - ll * ss;
-        const p = 2 * ll - q;
-        return [hue2rgb(p, q, hh + 1 / 3), hue2rgb(p, q, hh), hue2rgb(p, q, hh - 1 / 3)];
-    };
-    const lin = v => v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
-    const relL = (rr, gg, bb) => 0.2126 * lin(rr) + 0.7152 * lin(gg) + 0.0722 * lin(bb);
-    // Referencia --surface-2 (#35363a): es la superficie más CLARA sobre la que
-    // puede caer, así que garantizarlo aquí lo garantiza también en las más oscuras.
-    const BG = relL(53 / 255, 54 / 255, 58 / 255);
-    const h2 = n => Math.round(n * 255).toString(16).padStart(2, '0');
-
-    for (let ll = lBase; ll <= 0.96; ll += 0.02) {
-        const [rr, gg, bb] = toRgb(h, s, ll);
-        if ((relL(rr, gg, bb) + 0.05) / (BG + 0.05) >= 4.5) return '#' + h2(rr) + h2(gg) + h2(bb);
-    }
-    return '#e8eaed';
-}
-
-/**
  * 🎨 Iconos SVG inline temables (rediseño Paso 3). Heredan currentColor, así que
  * se adaptan solos al color de texto calculado del chip o al token del tema.
  * De momento solo los usa la vista calendario; el resto migra en el Paso 6.
@@ -2771,12 +2716,15 @@ function renderMainCalendar() {
         }
     });
 
-    // 🎨 Los contadores de plazas van junto al número de día ("11 1/2"), sin
+    // 🎨 Los contadores de plazas van junto al número de día ("11 ● 1/2"), sin
     // recuadro: en esquina flotante se solapaban con las etiquetas de nombre.
-    // El color conserva el tono del servicio pero aclarado para ser legible (§3.1).
+    // §3.1: el svc.color va en el PUNTO (hex exacto, sin derivar, así coincide
+    // siempre con el chip de su servicio) y el número en texto neutro legible.
+    // El punto lleva un aro sutil por CSS para que un color oscuro no se pierda
+    // sobre el fondo oscuro — el relleno sigue siendo el color tal cual.
     const plazasHtml = multihuecoItems.length > 0
         ? `<span class="cal-plazas">${multihuecoItems.map(item =>
-              `<span class="cal-plaza" style="color:${svcTextOnDark(item.color)};">${item.filled}/${item.pd}</span>`
+              `<span class="cal-plaza"><i class="cal-plaza__dot" style="background:${item.color};"></i>${item.filled}/${item.pd}</span>`
           ).join('')}</span>`
         : '';
 
