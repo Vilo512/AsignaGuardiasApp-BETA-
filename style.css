@@ -5,6 +5,11 @@
    tokenizan: son dato de Supabase, pintados inline desde app.js.
    ============================================================ */
 :root {
+  /* Controles NATIVOS (lista desplegada de <select>, scrollbars, date pickers):
+     sin esto, el navegador los pinta según el tema del SO ignorando el CSS.
+     Los modales no migrados lo revierten a `light` en su propio bloque. */
+  color-scheme: dark;
+
   /* — Legacy (tema claro actual; aún en uso por componentes) — */
   --ped: #10b981; --pac: #f59e0b; --adu: #3b82f6; --fest: #ef4444;
   --dark: #1e293b; --light: #f8fafc; --merc: #8b5cf6;
@@ -150,7 +155,11 @@
      dejarlos con texto a ~2.9:1 sobre fondo oscuro.
      El panel de día lleva .sheet y queda excluido: ese sí es oscuro.
      ============================================================ */
-  .modal:not(.sheet) { background: #ffffff; color: #334155; border-color: #e2e8f0; }
+  /* `color-scheme: light` revierte los controles nativos dentro de estos modales:
+     sin él, con el SO en oscuro el navegador pintaba la lista desplegada del
+     <select> en oscuro dentro de un modal blanco. Afecta al modal de propuesta
+     de mes (N5 8.5), que lleva un <select> por fila. */
+  .modal:not(.sheet) { background: #ffffff; color: #334155; border-color: #e2e8f0; color-scheme: light; }
   .modal:not(.sheet) h2, .modal:not(.sheet) h3, .modal:not(.sheet) h4 { color: #1e293b; }
   .modal:not(.sheet) button { background: #ffffff; color: #334155; border-color: #cbd5e1; }
   .modal:not(.sheet) button.primary { background: var(--btn-primary); color: #fff; border-color: transparent; }
