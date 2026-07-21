@@ -116,9 +116,12 @@
   /* 0.65 y no menos: por debajo, el número del día cae de 4.5:1 */
   .cal-cell.locked-ped { opacity: 0.65; cursor: not-allowed; }
 
-  /* Contador de plazas multihueco (extraído del inline de app.js) */
-  .cal-plazas { font-size: 0.6rem; position: absolute; bottom: 2px; right: 2px; display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
-  .cal-plaza { border-radius: 3px; padding: 0 4px; font-size: 0.68rem; font-weight: 700; white-space: nowrap; }
+  /* Fila de cabecera de la celda: número de día + contadores de plazas */
+  .cal-dayrow { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  /* Contador de plazas: texto suelto junto al día ("11 1/2"), SIN recuadro.
+     En esquina flotante absoluta se solapaba con las etiquetas de nombre. */
+  .cal-plazas { display: flex; gap: 5px; min-width: 0; overflow: hidden; }
+  .cal-plaza { font-size: 0.66rem; font-weight: 700; line-height: 1; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
   /* Shift Badges — el color de texto lo calcula contrastText() en app.js */
   .shift-badge { font-size: 0.66rem; padding: 3px 5px; border-radius: var(--r-sm); margin-bottom: 2px; font-weight: 700; letter-spacing: 0.2px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; justify-content: center; gap: 3px; }
