@@ -2788,6 +2788,12 @@ function openShiftModal(y, m, d, dateKey) {
   // 🎨 Paso 3: el modal centrado pasa a ser bottom sheet (sube desde abajo, al
   // alcance del pulgar). Solo cambia cómo se DIBUJA el día: toggleShift y el resto
   // de la lógica de asignación quedan intactos.
+  // 🎨 Un doble-toque rápido en la celda llegaba a crear DOS overlays con el mismo
+  // id="shift-modal". Como "Cerrar" resuelve por getElementById, borraba siempre el
+  // primero del DOM y no el que se veía: hacían falta dos pulsaciones para cerrar.
+  const _prevSheet = document.getElementById('shift-modal');
+  if (_prevSheet) _prevSheet.remove();
+
   const modal = document.createElement('div'); modal.className = 'modal-overlay sheet-overlay'; modal.id = 'shift-modal';
   let html = `<div class="modal sheet" role="dialog" aria-modal="true">
     <div class="sheet__grip" aria-hidden="true"></div>
