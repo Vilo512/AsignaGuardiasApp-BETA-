@@ -2799,13 +2799,20 @@ function openShiftModal(y, m, d, dateKey) {
   
   // Cambiamos el bucle para que recorra SOLO tus servicios autorizados para esta fecha
 serviciosDisponibles.forEach((svc, svcIdx) => {
-    // 🎨 Paso 3 (§3.1): el nombre del servicio va como CHIP con texto de contraste.
-    // Antes se pintaba con svc.color como color de texto: sobre fondo oscuro, un
-    // color de servicio oscuro se volvía ilegible.
-    html += `<div class="shift-option" style="flex-direction:column; align-items:stretch;"><div class="shift-option-header"><span class="svc-chip" style="background:${svc.color}; color:${contrastText(svc.color)};">${svc.nombre}</span></div>`;
     // 🧭 B4: los titulares se filtran con el mismo criterio de plan que el calendario
     const holders = Object.keys(dayShifts || {}).filter(u =>
         dayShifts[u] === svc.nombre && esTitularVisibleEnPlan(u, svc.nombre, planCtxModal));
+
+    // 🎨 Contador de plazas en la cabecera del servicio. En móvil la rejilla ya no
+    // lo pinta (no cabe sin descuadrar la celda): aquí es donde de verdad hace
+    // falta, justo al decidir si te asignas la guardia.
+    const pdSvc = getPlazasForDay(svc, dateKey);
+    const plazasChip = pdSvc > 1 ? `<span class="svc-plazas">${holders.length}/${pdSvc}</span>` : '';
+
+    // 🎨 Paso 3 (§3.1): el nombre del servicio va como CHIP con texto de contraste.
+    // Antes se pintaba con svc.color como color de texto: sobre fondo oscuro, un
+    // color de servicio oscuro se volvía ilegible.
+    html += `<div class="shift-option" style="flex-direction:column; align-items:stretch;"><div class="shift-option-header"><span class="svc-chip" style="background:${svc.color}; color:${contrastText(svc.color)};">${svc.nombre}</span>${plazasChip}</div>`;
 
     if (isDelegado && simulatedViewUser === null) {
 // A) INTERFAZ PARA ADMIN/DELEGADO (edición solo si gestiona el plan visualizado)
@@ -2841,7 +2848,7 @@ holders.forEach(h => {
         
         let disabled = false; let reason = "";
         let pData = pDataFull[svc.nombre];
-        let pd = getPlazasForDay(svc, dateKey);
+        let pd = pdSvc; // mismo valor: ya calculado arriba para la cabecera
 
         if (isUserPending && !isMine) { disabled = true; reason = "Turno bloqueado (Pendiente Admin)."; }
         else if (isIllegal && !isMine) { disabled = true; reason = "Ilegal: Choca con Saliente"; }

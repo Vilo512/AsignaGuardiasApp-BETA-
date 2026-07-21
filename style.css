@@ -94,7 +94,9 @@
   .cal-filter-btn.active { background: var(--surface-2); color: var(--text); border-color: var(--text-2); }
 
   .cal-header-nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
-  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: var(--sp-1); }
+  /* minmax(0,1fr) y no 1fr: con `1fr` el contenido puede ENSANCHAR su columna
+     (un día con dos contadores descuadraba la semana entera). */
+  .cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: var(--sp-1); }
   .cal-day-name { text-align: center; font-weight: 700; font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; padding: var(--sp-2) 0; color: var(--text-2); }
   .cal-cell { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); min-height: 92px; padding: var(--sp-1); display: flex; flex-direction: column; gap: 2px; cursor: pointer; position: relative; transition: background 0.15s, border-color 0.15s; -webkit-tap-highlight-color: transparent; }
   .cal-cell:hover { background: var(--surface-2); border-color: var(--border-2); }
@@ -160,6 +162,9 @@
      como diálogo centrado; en móvil sube desde abajo.
      ============================================================ */
   .svc-chip { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: var(--r-pill); font-size: 0.8rem; font-weight: 700; letter-spacing: 0.2px; }
+  /* Ocupación de plazas del servicio, en la cabecera de cada opción del panel.
+     En móvil este es el ÚNICO sitio donde se ve (la rejilla no lo pinta). */
+  .svc-plazas { font-size: 0.8rem; font-weight: 700; color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap; flex-shrink: 0; margin-left: var(--sp-2); }
   .sheet__grip { display: none; }
   .sheet__title { margin: 0 0 var(--sp-1); font-size: 1.05rem; }
   .sheet__mode { margin-bottom: var(--sp-4); font-weight: 700; font-size: 0.85rem; }
@@ -494,6 +499,11 @@
     .day-number { width: 20px; height: 20px; font-size: 0.75rem; }
     .shift-badge { padding: 2px 4px; }
     .shift-badge svg { width: 10px; height: 10px; }
+
+    /* Los contadores de plazas NO caben en una celda de ~46px sin descuadrarla.
+       En móvil se ven en el panel de día (.svc-plazas), que es donde se decide
+       la asignación. En escritorio sí se muestran en la rejilla. */
+    .cal-plazas { display: none; }
 
     .cal-header-nav { gap: var(--sp-2); }
     /* Solo los hijos directos (◀ Ant / Sig ▶): con `button` a secas se pisaba
