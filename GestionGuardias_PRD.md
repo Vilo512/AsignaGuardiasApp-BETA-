@@ -1,8 +1,8 @@
 # GestionGuardias App — Product Requirements Document
-**Versión:** 1.2  
-**Estado:** Funcionalidad core cerrada — abierto a extensiones UI/UX  
+**Versión:** 1.4  
+**Estado:** Funcionalidad core cerrada — rediseño visual en curso (§16.2)  
 **Audiencia:** Engineering Lead, desarrolladores, diseñadores  
-**Última actualización:** Mayo 2026
+**Última actualización:** 25 de julio de 2026
 
 ---
 
@@ -225,17 +225,30 @@ Transcurrida la ventana voluntaria, los huecos obligatorios sin cubrir se asigna
 Antes de ejecutar cualquier asignación forzosa global, el sistema calcula la propuesta completa de reparto y la presenta al admin para revisión. Solo tras confirmación explícita se materializan cambios en `state.shifts`.
 
 **Comportamiento:**
-- Opera sobre todos los servicios con `subastaTrigger` configurado en el mes activo (`curDate`)
+- El admin **elige sobre qué servicio** lanzar la propuesta (ver "Selección por servicio" abajo)
 - Usa los mismos criterios de prioridad que la asignación forzosa (§8.4): histórico de guardias, restricciones de saliente/entrante, criterio configurado por servicio
 - Presenta al admin una vista de propuesta: para cada hueco pendiente, el residente propuesto y el criterio aplicado
 - El admin puede modificar asignaciones individuales dentro de la propuesta antes de confirmar
 - La propuesta es no destructiva — ningún dato de `state.shifts` se modifica hasta que el admin confirma
 - Requiere confirmación explícita antes de ejecutar
-- Visible y accesible exclusivamente para `isAdmin`
-- Si todos los huecos de un servicio ya están cubiertos, ese servicio se omite silenciosamente
+- Visible y accesible exclusivamente para `isAdmin`, y bloqueada en modo simulación
+- Si todos los huecos de un servicio ya están cubiertos, ese servicio no se ofrece
+
+**Selección por servicio** *(añadido jul-2026)*
+
+El botón **📋 Proponer asignación** (banner de turno de la vista calendario) abre primero un **selector de servicio**, no la propuesta directamente:
+
+- Solo se listan los servicios con **huecos obligatorios sin cubrir** en el mes, con su recuento.
+- "Hueco obligatorio" = día que dispara subasta (`subastaTrigger` incluye la etiqueta del día) + habilitado si el servicio lo requiere + `plazas > 0`. **`plazasPorDia: 0` significa ilimitado y queda fuera de la subasta por diseño.**
+- Se ofrece además "Todos los servicios a la vez", que conserva el comportamiento anterior.
+- Si solo queda **un** servicio con huecos, se omite el selector y se abre su propuesta directamente.
+
+**Por qué servicio a servicio.** Al calcular todos los servicios de una vez, las asignaciones *hipotéticas* del primero entran en la simulación del siguiente y descartan candidatos por conflicto de saliente aunque esas guardias todavía no existan. Repartiendo de uno en uno —y aplicando antes de pasar al siguiente— cada cálculo parte de guardias **reales y confirmadas**. La opción "Todos" se mantiene por comodidad, pero arrastra ese efecto.
 
 **Directiva de implementación:**
 Reemplaza el concepto anterior de "Activar subasta ya" (ejecución inmediata sin revisión). La UI debe mostrar un modal o panel de propuesta que permita al admin revisar, ajustar y confirmar antes de que ninguna asignación se persista. No implementar `activarSubastaGlobal` como función de ejecución directa.
+
+**Estado:** implementado. `calcularPropuestaMes(y, m, planName, soloSvc)`, `contarHuecosPorServicio()`, `abrirSelectorPropuestaModal()`, `abrirPropuestaMesModal(y, m, soloSvc)` y `confirmarPropuestaMes()` en `app.js`.
 
 ### 8.6 Forzamiento de turno por inactividad
 
@@ -510,20 +523,47 @@ El sistema conserva un registro **completo** de:
 - **Popup contextual** para operaciones de intercambio con externo (§11.5)
 - **Código de color por servicio** en el calendario de huecos (§5.1)
 
-### 16.2 Pendiente de diseño
+### 16.2 Rediseño visual — tema oscuro *(en curso, jul-2026)*
 
-- [ ] Diseño de la vista principal del calendario mensual
+Rediseño por capas hacia una interfaz tipo Google Calendar, **oscura por defecto** (los residentes la usan en el móvil de madrugada). Brief completo y plan por pasos en `GestionGuardias_REDISENO.md`.
+
+**Decisiones cerradas:**
+
+| Tema | Decisión |
+|---|---|
+| Paleta | Google Calendar dark: `--bg #202124`, `--surface #2d2e30`, `--border #3c4043`, `--text #e8eaed`, `--text-2 #9aa0a6` |
+| `svc.color` como fondo | Se pinta el hex **exacto** del plan, sin derivar |
+| `svc.color` como texto | Prohibido. Se usa chip de fondo con texto calculado, o punto de color + texto neutro |
+| Contraste del texto sobre chip | Blanco por defecto; negro solo si el blanco no alcanza 3:1 (`contrastText()`) |
+| Iconos | SVG inline temables (`icon()`), migrados solo en la vista calendario |
+| Alcance por PR | Una vista por PR; el resto queda en claro hasta que le toque |
+
+**Regla dura:** los colores de servicio (`svc.color`) son **dato del plan**, elegidos por el usuario y guardados en Supabase. El rediseño no los tokeniza, no los altera y no los almacena en CSS.
+
+**Implementado:**
+- [x] Fundación de tokens en `:root` (neutros, espaciado, radios, elevación, acentos dark-safe)
+- [x] Chrome compartido: cabecera, tarjetas, pestañas, botones, formularios, pie, modales, notificaciones
+- [x] Vista calendario: rejilla, día actual resaltado, festivos, chips de guardia, contadores de plazas
+- [x] Panel de día como **bottom sheet** en móvil (reskin de `openShiftModal`, lógica intacta)
+- [x] Primeras `@media` del proyecto (antes no había ninguna)
+- [x] Objetivos táctiles ≥44px y contrastes verificados con `design-reviewer`
+
+**Pendiente:**
+- [ ] Mercadillo (`#pane-merc`) — comparte rejilla con el calendario, va medio hecho
+- [ ] Resto de vistas: rotación, grupos, perfil, ayuda, admin
+- [ ] Cabecera PWA: `manifest.json`, iconos, `theme-color`, metas apple *(instalable, sin offline)*
+
+### 16.3 Pendiente de diseño
+
 - [ ] Estado visual de los huecos: libre / ocupado / obligatorio / propio / ajeno
 - [ ] Flujo de onboarding para nuevos residentes
 - [ ] Vista de rotación de grupos (cómo se visualiza la lista y el avance mensual)
-- [ ] Diseño del panel de notificaciones in-app
 - [ ] Vista del histórico y audit trail (filtros, paginación, exportación)
 - [ ] Interfaz del motor de reglas de asignación mínima (para el admin)
 - [ ] Vista de recuento de horas con comparativa entre residentes
-- [ ] Diseño responsivo / mobile (¿es prioritario en v1.0?)
 - [ ] Estados vacíos (contenedor recién creado, mes sin huecos, etc.)
 
-### 16.3 Ideas anotadas para versiones futuras
+### 16.4 Ideas anotadas para versiones futuras
 
 - Ofertas públicas en el mercadillo (guardia en oferta abierta a cualquier residente)
 - Notificaciones push / email para eventos de alta prioridad
@@ -645,7 +685,14 @@ EventoAuditoria
 |---|---|---|
 | D-01 | Stack tecnológico | Backend, frontend, base de datos, hosting |
 | D-02 | Fuente de importación de festivos | API pública del calendario laboral español por localidad |
-| D-03 | Prioridad de diseño mobile en v1.0 | ¿Responsivo completo o desktop-first? |
+| D-04 | Unicidad del nombre de servicio dentro de un plan | No hay validación. Dos servicios homónimos rompen el selector de propuesta (§8.5) y todo lookup por nombre (`getSvcConfig`, `isServiceEnabledOnDate`). Riesgo preexistente y transversal |
+| D-05 | Umbral de `contrastText()` | Usa 3:1 (texto grande) sobre chips de ~10.5px que pedirían 4.5:1. Subirlo cambiaría a texto negro los servicios azules y rojos |
+
+**Resueltas**
+
+| # | Decisión | Resolución |
+|---|---|---|
+| D-03 | Prioridad de diseño mobile | **Mobile-first.** Los residentes usan la app en el móvil de madrugada; la legibilidad y el tamaño táctil priman sobre la densidad. Ver §16.2 |
 
 ### Changelog
 
@@ -664,3 +711,4 @@ EventoAuditoria
 | v1.1 | §8.5 nuevo: override de emergencia "Activar subasta ya" con directiva de implementación (`activarSubastaGlobal`, ruta paralela sin modificar funciones existentes). |
 | v1.2 | §8: invariante de reset (limpiar `subastasCerradasForzosas`), panel de turno solo en mes activo/futuro. §8.3: calendario abierto durante ventana voluntaria, `isMyTurn` no bloquea en estado `subasta_abierta`. |
 | v1.3 | §8.5 rediseñado: "Propuesta de asignación automática" reemplaza "Activar subasta ya" — propuesta editable con revisión admin antes de ejecutar, no destructiva hasta confirmar. §8.6 nuevo: "Forzamiento de turno por inactividad" — umbral configurable, admin/delegado asigna mínimo al residente inactivo y avanza turno. |
+| v1.4 | §8.5: **selección por servicio** — el admin elige sobre qué servicio lanzar la propuesta; solo se ofrecen los que tienen huecos obligatorios sin cubrir (`plazasPorDia: 0` = ilimitado queda fuera). Se documenta por qué el reparto encadenado falsea los descartes por saliente. §16.2 nueva: rediseño visual a tema oscuro (paleta, reglas de `svc.color`, estado por vista). §16 renumerada. D-03 resuelta (mobile-first); D-04 y D-05 nuevas. |
