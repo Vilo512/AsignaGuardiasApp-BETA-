@@ -5766,13 +5766,52 @@ function _candidatoElegible(residente, dk, svc, shifts) {
 }
 
 /**
- * Calcula la propuesta de reparto del mes para TODOS los servicios con subastaTrigger del
- * plan (§8.5), rellenando solo los huecos vacíos. No toca state.shifts: trabaja sobre una
+ * 📋 Cuenta, por servicio, los huecos OBLIGATORIOS que quedan sin cubrir en el mes.
+ * "Obligatorio" = día que dispara subasta, habilitado si el servicio lo requiere, y con
+ * plazas > 0 (plazasPorDia 0 significa ilimitado y queda fuera de la subasta por diseño).
+ * Es un recuento estructural: no evalúa candidatos, así que es barato y sirve para
+ * poblar el selector de servicios sin simular nada.
+ * @returns {{nombre: string, huecos: number}[]} solo servicios con al menos un hueco
+ */
+function contarHuecosPorServicio(y, m, planName) {
+    const planRef = (promoConfig.planes || []).find(p => p.nombre === planName);
+    if (!planRef || !planRef.servicios) return [];
+    const totalDias = getDaysInMonth(y, m);
+    const salida = [];
+
+    [...planRef.servicios]
+        .filter(s => (s.subastaTrigger || []).length > 0)
+        .sort((a, b) => (a.ordenSubasta || 999) - (b.ordenSubasta || 999))
+        .forEach(svc => {
+            let huecos = 0;
+            for (let d = 1; d <= totalDias; d++) {
+                const dk = formatDateKey(y, m, d);
+                if (!svc.subastaTrigger.includes(getDayTag(y, m, d))) continue;
+                if (svc.requiereHabilitacion && !isServiceEnabledOnDate(svc.nombre, dk, planName)) continue;
+                // Mismo criterio de ocupación que calcularPropuestaMes: los VRE y los
+                // residentes de otros planes no cuentan como plaza cubierta de este plan.
+                let ocupados = 0;
+                for (const u in (state.shifts[dk] || {})) {
+                    if (state.shifts[dk][u] === svc.nombre && !u.startsWith('VRE')
+                        && residentePerteneceAPlan(u, planName, y, m)) ocupados++;
+                }
+                huecos += Math.max(0, getPlazasForDay(svc, dk, planName) - ocupados);
+            }
+            if (huecos > 0) salida.push({ nombre: svc.nombre, huecos });
+        });
+    return salida;
+}
+
+/**
+ * Calcula la propuesta de reparto del mes para los servicios con subastaTrigger del plan
+ * (§8.5), rellenando solo los huecos vacíos. No toca state.shifts: trabaja sobre una
  * copia simulada. Para cada hueco guarda además la lista de candidatos elegibles y los
  * motivos de descarte — semilla del informe de viabilidad de N6.
+ * @param {string|null} [soloSvc] - nombre de un servicio para limitar la propuesta a él;
+ *                                  null/omitido = todos los servicios con subasta.
  * @returns {{filas: Object[], residentes: string[], planNombre: string}|null}
  */
-function calcularPropuestaMes(y, m, planName) {
+function calcularPropuestaMes(y, m, planName, soloSvc = null) {
     const planRef = (promoConfig.planes || []).find(p => p.nombre === planName);
     if (!planRef || !planRef.servicios) return null;
 
@@ -5785,8 +5824,12 @@ function calcularPropuestaMes(y, m, planName) {
     const simulated = _recortarShiftsAlMes(state.shifts, y, m);
     const filas = [];
 
+    // 📋 soloSvc: limita la propuesta a un único servicio. Así el admin revisa y aplica
+    // servicio a servicio, y cada cálculo parte de asignaciones REALES en vez de las
+    // hipotéticas del servicio anterior (que falseaban los descartes por saliente).
     const serviciosOrdenados = [...planRef.servicios]
         .filter(s => (s.subastaTrigger || []).length > 0)
+        .filter(s => !soloSvc || s.nombre === soloSvc)
         .sort((a, b) => (a.ordenSubasta || 999) - (b.ordenSubasta || 999));
 
     for (const svc of serviciosOrdenados) {
@@ -5833,14 +5876,25 @@ function calcularPropuestaMes(y, m, planName) {
  * Abre el modal de revisión de la propuesta (§8.5). Exclusivo del admin. Nada se escribe
  * en state.shifts hasta pulsar Confirmar; cada fila es editable.
  */
-function abrirPropuestaMesModal(y, m) {
+function abrirPropuestaMesModal(y, m, soloSvc) {
     if (!isAdmin) return alert('⚠️ La propuesta de asignación es exclusiva del administrador.');
     if (simulatedViewUser !== null) return alert('⚠️ Estás en modo visualización. Sal de la simulación para usar la propuesta.');
     const planName = getCurrentRotPlan(formatDateKey(y, m, 1));
-    const propuesta = calcularPropuestaMes(y, m, planName);
+
+    // 📋 Paso 1 — elección de servicio. `undefined` = aún no se ha elegido; `null` = todos.
+    // Solo se ofrecen servicios con huecos obligatorios pendientes; si queda uno solo,
+    // se salta el selector para no pedir un clic sin alternativa real.
+    if (soloSvc === undefined) {
+        const conHuecos = contarHuecosPorServicio(y, m, planName);
+        if (conHuecos.length === 0) return alert(`✅ No hay huecos vacíos en ${planName} para ${MONTHS[m]} ${y}. No hay nada que proponer.`);
+        if (conHuecos.length === 1) return abrirPropuestaMesModal(y, m, conHuecos[0].nombre);
+        return abrirSelectorPropuestaModal(y, m, planName, conHuecos);
+    }
+
+    const propuesta = calcularPropuestaMes(y, m, planName, soloSvc);
     if (!propuesta) return alert('No se ha podido resolver el plan visualizado.');
-    if (propuesta.filas.length === 0) return alert(`✅ No hay huecos vacíos en ${planName} para ${MONTHS[m]} ${y}. No hay nada que proponer.`);
-    _propuestaMes = { ...propuesta, y, m };
+    if (propuesta.filas.length === 0) return alert(`✅ No hay huecos vacíos en ${soloSvc || planName} para ${MONTHS[m]} ${y}. No hay nada que proponer.`);
+    _propuestaMes = { ...propuesta, y, m, soloSvc };
 
     document.getElementById('propuesta-modal')?.remove();
     const nAsignados = propuesta.filas.filter(f => f.tipo === 'asignado').length;
@@ -5870,9 +5924,9 @@ function abrirPropuestaMesModal(y, m) {
     modal.id = 'propuesta-modal';
     modal.innerHTML = `
         <div class="modal" style="max-width:600px; text-align:left;">
-            <h3 style="margin-bottom:0.3rem;">📋 Propuesta de asignación — ${MONTHS[m]} ${y}</h3>
+            <h3 style="margin-bottom:0.3rem;">📋 ${soloSvc ? soloSvc : 'Todos los servicios'} — ${MONTHS[m]} ${y}</h3>
             <p style="font-size:0.82rem; color:#64748b; margin-bottom:0.8rem;">
-                Plan <b>${planName}</b> · Rellena solo los <b>huecos vacíos</b> de los servicios con subasta, repartiendo por los criterios de justicia ya configurados (menor histórico primero) y respetando los descansos de saliente.
+                Plan <b>${planName}</b> · Rellena solo los <b>huecos vacíos</b> ${soloSvc ? 'de este servicio' : 'de los servicios con subasta'}, repartiendo por los criterios de justicia ya configurados (menor histórico primero) y respetando los descansos de saliente.
                 <b>Nada se guarda hasta que confirmes</b>, y puedes cambiar cualquier fila.
             </p>
             <div style="display:flex; gap:8px; margin-bottom:8px; font-size:0.8rem;">
@@ -5882,7 +5936,51 @@ function abrirPropuestaMesModal(y, m) {
             <div style="max-height:330px; overflow-y:auto; border:1px solid #e2e8f0; border-radius:8px; padding:6px;">${filasHtml}</div>
             <div style="display:flex; gap:8px; margin-top:12px;">
                 <button class="primary" style="flex:1; background:var(--dark); color:white;" onclick="confirmarPropuestaMes()">✅ Aplicar propuesta</button>
+                <button onclick="document.getElementById('propuesta-modal').remove(); _propuestaMes = null; abrirPropuestaMesModal(${y}, ${m});">↩ Otro servicio</button>
                 <button onclick="document.getElementById('propuesta-modal').remove(); _propuestaMes = null;">Cancelar</button>
+            </div>
+        </div>`;
+    document.body.appendChild(modal);
+}
+
+/**
+ * 📋 Selector previo de la propuesta (§8.5): deja al admin elegir SOBRE QUÉ SERVICIO
+ * lanzarla, listando solo los que tienen huecos obligatorios pendientes este mes.
+ * Repartir servicio a servicio evita que las asignaciones hipotéticas de uno falseen
+ * los descartes por saliente del siguiente.
+ * @param {{nombre: string, huecos: number}[]} conHuecos
+ */
+function abrirSelectorPropuestaModal(y, m, planName, conHuecos) {
+    document.getElementById('propuesta-modal')?.remove();
+    const total = conHuecos.reduce((a, s) => a + s.huecos, 0);
+    const esc = n => String(n).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+
+    const opciones = conHuecos.map(s => `
+        <button onclick="abrirPropuestaMesModal(${y}, ${m}, '${esc(s.nombre)}')"
+                style="display:flex; justify-content:space-between; align-items:center; gap:10px; width:100%; text-align:left; padding:10px 12px; min-height:44px; margin-bottom:6px; font-size:0.86rem;">
+            <span><b>${s.nombre}</b></span>
+            <span style="color:#64748b; font-size:0.8rem; white-space:nowrap;">${s.huecos} hueco${s.huecos === 1 ? '' : 's'}</span>
+        </button>`).join('');
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.id = 'propuesta-modal';
+    modal.innerHTML = `
+        <div class="modal" style="max-width:480px; text-align:left;">
+            <h3 style="margin-bottom:0.3rem;">📋 Proponer asignación — ${MONTHS[m]} ${y}</h3>
+            <p style="font-size:0.82rem; color:#64748b; margin-bottom:0.8rem;">
+                Plan <b>${planName}</b> · Elige el servicio sobre el que lanzar la propuesta.
+                Solo aparecen los que tienen <b>huecos obligatorios sin cubrir</b>.
+                Repartir <b>de uno en uno</b> es más fiable: cada cálculo parte de las guardias ya confirmadas.
+            </p>
+            ${opciones}
+            <button onclick="abrirPropuestaMesModal(${y}, ${m}, null)"
+                    style="display:flex; justify-content:space-between; align-items:center; gap:10px; width:100%; text-align:left; padding:10px 12px; min-height:44px; margin-top:10px; font-size:0.86rem; border-style:dashed;">
+                <span>Todos los servicios a la vez</span>
+                <span style="color:#64748b; font-size:0.8rem; white-space:nowrap;">${total} hueco${total === 1 ? '' : 's'}</span>
+            </button>
+            <div style="display:flex; justify-content:flex-end; margin-top:12px;">
+                <button onclick="document.getElementById('propuesta-modal').remove();">Cancelar</button>
             </div>
         </div>`;
     document.body.appendChild(modal);
@@ -5892,7 +5990,7 @@ function abrirPropuestaMesModal(y, m) {
 async function confirmarPropuestaMes() {
     if (!_propuestaMes) return;
     if (!isAdmin) return alert('⚠️ Solo el administrador puede aplicar la propuesta.');
-    const { filas, y, m, planNombre } = _propuestaMes;
+    const { filas, y, m, planNombre, soloSvc } = _propuestaMes;
 
     // Recogemos lo que el admin haya dejado en cada desplegable
     const aplicar = [];
@@ -5902,7 +6000,7 @@ async function confirmarPropuestaMes() {
         if (val) aplicar.push({ dk: f.dk, svc: f.svc, residente: val });
     });
     if (aplicar.length === 0) return alert('No hay ninguna asignación seleccionada.');
-    if (!confirm(`¿Aplicar ${aplicar.length} guardia(s) al calendario de ${planNombre} en ${MONTHS[m]} ${y}?`)) return;
+    if (!confirm(`¿Aplicar ${aplicar.length} guardia(s) de ${soloSvc || 'todos los servicios'} al calendario de ${planNombre} en ${MONTHS[m]} ${y}?`)) return;
 
     for (const a of aplicar) {
         if (!state.shifts[a.dk]) state.shifts[a.dk] = {};
