@@ -2372,6 +2372,23 @@ function contrastText(hex) {
 }
 
 /**
+ * Escapa texto para incrustarlo con seguridad en HTML generado por template string.
+ * Los nombres de servicio, plan y residente son texto libre que escribe el admin: sin
+ * esto, un `UCI "Peque"` rompe el atributo que lo contiene y un `<b>` inyecta markup.
+ * Cuando se pueda, es preferible construir el nodo y usar textContent.
+ * @param {*} s
+ * @returns {string}
+ */
+function escapeHtml(s) {
+    return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/**
  * 🎨 Iconos SVG inline temables (rediseño Paso 3). Heredan currentColor, así que
  * se adaptan solos al color de texto calculado del chip o al token del tema.
  * De momento solo los usa la vista calendario; el resto migra en el Paso 6.
@@ -5829,7 +5846,7 @@ function calcularPropuestaMes(y, m, planName, soloSvc = null) {
     // hipotéticas del servicio anterior (que falseaban los descartes por saliente).
     const serviciosOrdenados = [...planRef.servicios]
         .filter(s => (s.subastaTrigger || []).length > 0)
-        .filter(s => !soloSvc || s.nombre === soloSvc)
+        .filter(s => soloSvc == null || s.nombre === soloSvc)
         .sort((a, b) => (a.ordenSubasta || 999) - (b.ordenSubasta || 999));
 
     for (const svc of serviciosOrdenados) {
@@ -5893,7 +5910,7 @@ function abrirPropuestaMesModal(y, m, soloSvc) {
 
     const propuesta = calcularPropuestaMes(y, m, planName, soloSvc);
     if (!propuesta) return alert('No se ha podido resolver el plan visualizado.');
-    if (propuesta.filas.length === 0) return alert(`✅ No hay huecos vacíos en ${soloSvc || planName} para ${MONTHS[m]} ${y}. No hay nada que proponer.`);
+    if (propuesta.filas.length === 0) return alert(`✅ No hay huecos vacíos en ${soloSvc == null ? planName : soloSvc} para ${MONTHS[m]} ${y}. No hay nada que proponer.`);
     _propuestaMes = { ...propuesta, y, m, soloSvc };
 
     document.getElementById('propuesta-modal')?.remove();
@@ -5924,9 +5941,9 @@ function abrirPropuestaMesModal(y, m, soloSvc) {
     modal.id = 'propuesta-modal';
     modal.innerHTML = `
         <div class="modal" style="max-width:600px; text-align:left;">
-            <h3 style="margin-bottom:0.3rem;">📋 ${soloSvc ? soloSvc : 'Todos los servicios'} — ${MONTHS[m]} ${y}</h3>
+            <h3 style="margin-bottom:0.3rem;">📋 ${soloSvc == null ? 'Todos los servicios' : escapeHtml(soloSvc)} — ${MONTHS[m]} ${y}</h3>
             <p style="font-size:0.82rem; color:#64748b; margin-bottom:0.8rem;">
-                Plan <b>${planName}</b> · Rellena solo los <b>huecos vacíos</b> ${soloSvc ? 'de este servicio' : 'de los servicios con subasta'}, repartiendo por los criterios de justicia ya configurados (menor histórico primero) y respetando los descansos de saliente.
+                Plan <b>${escapeHtml(planName)}</b> · Rellena solo los <b>huecos vacíos</b> ${soloSvc == null ? 'de los servicios con subasta' : 'de este servicio'}, repartiendo por los criterios de justicia ya configurados (menor histórico primero) y respetando los descansos de saliente.
                 <b>Nada se guarda hasta que confirmes</b>, y puedes cambiar cualquier fila.
             </p>
             <div style="display:flex; gap:8px; margin-bottom:8px; font-size:0.8rem;">
@@ -5953,14 +5970,6 @@ function abrirPropuestaMesModal(y, m, soloSvc) {
 function abrirSelectorPropuestaModal(y, m, planName, conHuecos) {
     document.getElementById('propuesta-modal')?.remove();
     const total = conHuecos.reduce((a, s) => a + s.huecos, 0);
-    const esc = n => String(n).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-
-    const opciones = conHuecos.map(s => `
-        <button onclick="abrirPropuestaMesModal(${y}, ${m}, '${esc(s.nombre)}')"
-                style="display:flex; justify-content:space-between; align-items:center; gap:10px; width:100%; text-align:left; padding:10px 12px; min-height:44px; margin-bottom:6px; font-size:0.86rem;">
-            <span><b>${s.nombre}</b></span>
-            <span style="color:#64748b; font-size:0.8rem; white-space:nowrap;">${s.huecos} hueco${s.huecos === 1 ? '' : 's'}</span>
-        </button>`).join('');
 
     const modal = document.createElement('div');
     modal.className = 'modal-overlay';
@@ -5969,20 +5978,41 @@ function abrirSelectorPropuestaModal(y, m, planName, conHuecos) {
         <div class="modal" style="max-width:480px; text-align:left;">
             <h3 style="margin-bottom:0.3rem;">📋 Proponer asignación — ${MONTHS[m]} ${y}</h3>
             <p style="font-size:0.82rem; color:#64748b; margin-bottom:0.8rem;">
-                Plan <b>${planName}</b> · Elige el servicio sobre el que lanzar la propuesta.
+                Plan <b>${escapeHtml(planName)}</b> · Elige el servicio sobre el que lanzar la propuesta.
                 Solo aparecen los que tienen <b>huecos obligatorios sin cubrir</b>.
                 Repartir <b>de uno en uno</b> es más fiable: cada cálculo parte de las guardias ya confirmadas.
             </p>
-            ${opciones}
-            <button onclick="abrirPropuestaMesModal(${y}, ${m}, null)"
-                    style="display:flex; justify-content:space-between; align-items:center; gap:10px; width:100%; text-align:left; padding:10px 12px; min-height:44px; margin-top:10px; font-size:0.86rem; border-style:dashed;">
-                <span>Todos los servicios a la vez</span>
-                <span style="color:#64748b; font-size:0.8rem; white-space:nowrap;">${total} hueco${total === 1 ? '' : 's'}</span>
-            </button>
+            <div id="propuesta-opciones"></div>
             <div style="display:flex; justify-content:flex-end; margin-top:12px;">
                 <button onclick="document.getElementById('propuesta-modal').remove();">Cancelar</button>
             </div>
         </div>`;
+
+    // Los botones se construyen por DOM, no por template: el nombre del servicio es
+    // texto libre del admin y no debe interpolarse ni en HTML ni en un atributo onclick
+    // (un `UCI "Peque"` rompería el atributo; un `<b>` inyectaría markup).
+    const cont = modal.querySelector('#propuesta-opciones');
+    const mkBtn = (etiqueta, huecos, onClick, dashed) => {
+        const b = document.createElement('button');
+        b.setAttribute('style', `display:flex; justify-content:space-between; align-items:center; gap:10px;`
+            + ` width:100%; text-align:left; padding:10px 12px; min-height:44px; font-size:0.86rem;`
+            + (dashed ? ' margin-top:10px; border-style:dashed;' : ' margin-bottom:6px;'));
+        const izq = document.createElement('span');
+        if (dashed) izq.textContent = etiqueta;
+        else { const bo = document.createElement('b'); bo.textContent = etiqueta; izq.appendChild(bo); }
+        const der = document.createElement('span');
+        der.setAttribute('style', 'color:#64748b; font-size:0.8rem; white-space:nowrap;');
+        der.textContent = `${huecos} hueco${huecos === 1 ? '' : 's'}`;
+        b.append(izq, der);
+        b.addEventListener('click', onClick);
+        return b;
+    };
+
+    conHuecos.forEach(s => cont.appendChild(
+        mkBtn(s.nombre, s.huecos, () => abrirPropuestaMesModal(y, m, s.nombre), false)));
+    cont.appendChild(
+        mkBtn('Todos los servicios a la vez', total, () => abrirPropuestaMesModal(y, m, null), true));
+
     document.body.appendChild(modal);
 }
 
@@ -6000,7 +6030,7 @@ async function confirmarPropuestaMes() {
         if (val) aplicar.push({ dk: f.dk, svc: f.svc, residente: val });
     });
     if (aplicar.length === 0) return alert('No hay ninguna asignación seleccionada.');
-    if (!confirm(`¿Aplicar ${aplicar.length} guardia(s) de ${soloSvc || 'todos los servicios'} al calendario de ${planNombre} en ${MONTHS[m]} ${y}?`)) return;
+    if (!confirm(`¿Aplicar ${aplicar.length} guardia(s) de ${soloSvc == null ? 'todos los servicios' : soloSvc} al calendario de ${planNombre} en ${MONTHS[m]} ${y}?`)) return;
 
     for (const a of aplicar) {
         if (!state.shifts[a.dk]) state.shifts[a.dk] = {};
