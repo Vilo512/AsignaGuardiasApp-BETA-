@@ -5630,13 +5630,6 @@ function proyectarAsignacionForzosa(y, m, analisis) {
     return { proyecciones, salvados };
 }
 
-async /**
- * Asigna automáticamente guardias pendientes de un servicio a los nominados por la subasta.
- * Respeta las restricciones de saliente y rota la carga entre los candidatos con fairness.
- * @param {number} y
- * @param {number} m - 0-indexed
- * @param {string} targetSvcNombre - nombre del servicio a cubrir
- */
 // ============================================================
 // MÓDULO: PROPUESTA_ASIGNACION (N5 §8.5)
 // Exportar a: src/modules/propuestaAsignacion.js
@@ -5954,6 +5947,13 @@ function registrarHuecoSinCandidato(dk, svcNombre, planNombre, y, m, candidatosE
     }
 }
 
+/**
+ * Asigna automáticamente guardias pendientes de un servicio a los nominados por la subasta.
+ * Respeta las restricciones de saliente y rota la carga entre los candidatos con fairness.
+ * @param {number} y
+ * @param {number} m - 0-indexed
+ * @param {string} targetSvcNombre - nombre del servicio a cubrir
+ */
 async function ejecutarAsignacionForzosa(y, m, targetSvcNombre) {
     const _pvForz = getCurrentRotPlan(formatDateKey(y, m, 1));
     if (!puedeGestionarPlan(_pvForz, y, m)) return alert('⚠️ Solo puedes forzar asignaciones de tu propio plan de guardias.');
