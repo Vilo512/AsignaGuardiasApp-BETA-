@@ -2850,7 +2850,7 @@ holders.forEach(h => {
         </div>`;
     if (esGestorModal) {
         html += `<label style="font-size:0.75rem; color:var(--text-2); display:block; margin-bottom:2px;">Regimen de Guardia:</label>
-        <select onchange="updateShiftMode('${dateKey}', '${h}', this.value)" style="margin:0; padding:4px; font-size:0.8rem; width:100%;">
+        <select class="sheet-select" onchange="updateShiftMode('${dateKey}', '${h}', this.value)" style="margin:0; padding:4px; width:100%;">
             <option value="normal" ${currentMode === 'normal' ? 'selected' : ''}>Guardia Normal</option>
             <option value="partida_primera" ${currentMode === 'partida_primera' ? 'selected' : ''}>Partida Diurna (50% H / Sin Saliente)</option>
             <option value="partida_segunda" ${currentMode === 'partida_segunda' ? 'selected' : ''}>Partida Nocturna (50% H / Con Saliente)</option>
@@ -2862,7 +2862,7 @@ holders.forEach(h => {
 	}); // ⚠️ ESTE CIERRE ES EL QUE HABÍAS BORRADO
         if (esGestorModal) {
             // Solo residentes del plan visualizado, activos este mes (B4)
-            html += `<div style="display:flex; gap:4px; margin-top:12px; border-top:1px solid #e2e8f0; padding-top:8px;"><select id="force-sel-${svcIdx}" style="margin:0; padding:4px; font-size:0.8rem;"><option value="">Añadir Residente...</option>${candidatosForce.map(r => `<option value="${r}">${r}</option>`).join('')}</select><button class="primary" style="background:var(--dark); color:white;" onclick="adminForceAssign('${dateKey}', '${svc.nombre}', ${y}, ${m}, ${d}, 'force-sel-${svcIdx}')">Poner</button></div>`;
+            html += `<div style="display:flex; gap:4px; margin-top:12px; border-top:1px solid #e2e8f0; padding-top:8px;"><select id="force-sel-${svcIdx}" class="sheet-select" style="margin:0; padding:4px;"><option value="">Añadir Residente...</option>${candidatosForce.map(r => `<option value="${r}">${r}</option>`).join('')}</select><button class="primary" style="background:var(--dark); color:white;" onclick="adminForceAssign('${dateKey}', '${svc.nombre}', ${y}, ${m}, ${d}, 'force-sel-${svcIdx}')">Poner</button></div>`;
         }
     } else {
         const isMine = dayShifts[viewUser] === svc.nombre;
@@ -2900,7 +2900,7 @@ if (isMine) {
         </div>
         <div style="margin-top:4px;">
             <label style="font-size:0.75rem; color:var(--pac-d); display:block; margin-bottom:2px; font-weight:bold;">Ajustar Modalidad:</label>
-            <select ${simulatedViewUser !== null ? 'disabled' : `onchange="updateShiftMode('${dateKey}', '${viewUser}', this.value)"`} style="margin:0; padding:6px; font-size:0.8rem; width:100%;">
+            <select class="sheet-select" ${simulatedViewUser !== null ? 'disabled' : `onchange="updateShiftMode('${dateKey}', '${viewUser}', this.value)"`} style="margin:0; padding:6px; width:100%;">
                 <option value="normal" ${currentMode === 'normal' ? 'selected' : ''}>Guardia Normal</option>
                 <option value="partida_primera" ${currentMode === 'partida_primera' ? 'selected' : ''}>Partida Diurna (50% Horas / Sin Saliente)</option>
                 <option value="partida_segunda" ${currentMode === 'partida_segunda' ? 'selected' : ''}>Partida Nocturna (50% Horas / Con Saliente)</option>
@@ -3079,6 +3079,12 @@ function renderMercadoCalendar() {
   // 🧭 B1: mismo contexto de plan visualizado que el calendario principal
   const planVistaCtxMerc = getPlanVistaContext(y, m);
   const userLevelName = planVistaCtxMerc ? planVistaCtxMerc.planName : 'ALL';
+  // 🧭 Misma fuente de servicios que el calendario principal, y izada fuera del
+  // bucle igual que allí. Con promoConfig.servicios la rejilla se quedaba SIN
+  // badges en promociones de varios planes: adminSaveConfig lo machaca con los
+  // servicios del primer plan, así que al mirar otro plan la intersección con
+  // svcNames era vacía hasta recargar (normalizeConfig sí reconstruye la unión).
+  const todosLosServiciosMerc = getAllUniqueServices();
   for(let d=1; d<=getDaysInMonth(y,m); d++) {
     const dk = formatDateKey(y, m, d);
     const dayShifts = computed[dk] || {};
@@ -3088,12 +3094,7 @@ function renderMercadoCalendar() {
     if (bgStyle) cell.setAttribute('style', bgStyle);
     let html = `<div class="day-number">${d}</div>`;
 
-    // 🧭 Misma fuente de servicios que el calendario principal. Con
-    // promoConfig.servicios la rejilla se quedaba SIN badges en promociones de
-    // varios planes: saveAdminConfig lo machaca con los servicios del primer
-    // plan, así que al mirar otro plan la intersección con svcNames era vacía
-    // hasta recargar la página (normalizeConfig sí reconstruye la unión).
-    getAllUniqueServices().forEach(svc => {
+    todosLosServiciosMerc.forEach(svc => {
         if (planVistaCtxMerc && !planVistaCtxMerc.svcNames.includes(svc.nombre)) return;
         let assigned = Object.keys(dayShifts || {}).filter(u =>
             dayShifts[u] === svc.nombre && esTitularVisibleEnPlan(u, svc.nombre, planVistaCtxMerc));
@@ -3256,15 +3257,25 @@ function executeBuyRequest(dk, svc, targetUser) { if (targetUser !== 'Externo' &
 // Helpers que usa: syncConfigFromUI, saveState, setStatus, renderAll, checkAutomaticGraduation, MONTHS
 // ============================================================
 /**
- * Normaliza un nombre de servicio para compararlo: sin espacios sobrantes y en
- * minúsculas. `Pediatría ` y `pediatría` son el mismo servicio para quien lo
- * escribe y dos distintos para el código, y esa asimetría es justo la que
- * produce guardias huérfanas que no encuentran su configuración.
+ * Normaliza un nombre para compararlo. `Pediatría ` y `pediatría` son el mismo
+ * servicio para quien lo escribe y dos distintos para el código, y esa asimetría
+ * es justo la que deja guardias sin encontrar su configuración.
+ *
+ * `normalize('NFC')` no es adorno: `Pediatría` tecleada en Windows y la misma
+ * palabra pegada desde un documento de macOS son cadenas DISTINTAS —una lleva la
+ * tilde como carácter combinante— y en pantalla son idénticas carácter por
+ * carácter. Sin esto, dos servicios visualmente iguales pasaban la validación y
+ * el segundo quedaba inalcanzable para siempre. En una app en español, con
+ * Pediatría / Cirugía / Urgencias, no es un caso teórico.
+ *
+ * El colapso de espacios cubre el mismo problema por otra vía: espacio doble
+ * interno y espacio duro (` `), que `\s` sí captura.
+ *
  * @param {string} nombre
  * @returns {string} clave de comparación
  */
 function claveNombreServicio(nombre) {
-    return String(nombre ?? '').trim().toLowerCase();
+    return String(nombre ?? '').normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 /**
@@ -3289,7 +3300,7 @@ function getConflictosNombreServicio() {
         const porClave = new Map();
         const vacios = [];
         (plan.servicios || []).forEach((svc, i) => {
-            const clave = claveNombreServicio(svc.nombre);
+            const clave = claveNombreServicio((svc || {}).nombre);
             if (!clave) { vacios.push(i); return; }
             if (!porClave.has(clave)) porClave.set(clave, []);
             porClave.get(clave).push(i);
@@ -3297,7 +3308,7 @@ function getConflictosNombreServicio() {
         if (vacios.length) conflictos.push({ tipo: 'vacio', plan: plan.nombre, pIdx, nombre: '', indices: vacios });
         porClave.forEach(indices => {
             if (indices.length > 1) {
-                conflictos.push({ tipo: 'duplicado', plan: plan.nombre, pIdx, nombre: plan.servicios[indices[0]].nombre, indices });
+                conflictos.push({ tipo: 'duplicado', plan: plan.nombre, pIdx, nombre: (plan.servicios[indices[0]] || {}).nombre, indices });
             }
         });
     });
@@ -3346,12 +3357,17 @@ function renderAdminAjustes() {
   </div>`;
 
   promoConfig.planes.forEach((plan, pIdx) => {
+    // D-04: un plan con conflicto se pinta ABIERTO. El acordeón no conserva
+    // estado entre repintados, así que sin esto el aviso rojo que acabamos de
+    // pintar quedaba dentro de un <details> cerrado — justo en el momento en
+    // que hace falta verlo, al volver del alert de guardado fallido.
+    const planEnConflicto = conflictosNombre.some(c => c.pIdx === pIdx);
     html += `
-    <details style="background:#f1f5f9; border:2px solid #cbd5e1; border-radius:12px; padding:15px; margin-bottom:20px;"><summary style="font-weight:bold; cursor:pointer; font-size:1.1rem; color:var(--dark);">👉 Desplegar/Ocultar: ${plan.nombre}</summary><div style="margin-top: 15px;">
+    <details ${planEnConflicto ? 'open' : ''} style="background:#f1f5f9; border:2px solid #cbd5e1; border-radius:12px; padding:15px; margin-bottom:20px;"><summary style="font-weight:bold; cursor:pointer; font-size:1.1rem; color:var(--dark);">👉 Desplegar/Ocultar: ${escapeHtml(plan.nombre)}</summary><div style="margin-top: 15px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; border-bottom:2px solid #94a3b8; padding-bottom:10px; flex-wrap:wrap; gap:10px;">
-            <input type="text" id="cfg-plan-nom-${pIdx}" value="${plan.nombre}" style="margin:0; font-size:1.2rem; font-weight:bold; color:var(--dark); border:1px solid transparent; background:transparent; max-width:250px;">
+            <input type="text" id="cfg-plan-nom-${pIdx}" value="${escapeHtml(plan.nombre)}" style="margin:0; font-size:1.2rem; font-weight:bold; color:var(--dark); border:1px solid transparent; background:transparent; max-width:250px;">
             <div style="display:flex; gap:8px;">
-                <button class="primary icon-btn" style="background:var(--adu);" onclick="adminAddService(${pIdx})">+ Servicio al ${plan.nombre}</button>
+                <button class="primary icon-btn" style="background:var(--adu);" onclick="adminAddService(${pIdx})">+ Servicio al ${escapeHtml(plan.nombre)}</button>
                 <button class="danger icon-btn" onclick="adminRemovePlan(${pIdx})">Borrar Plan</button>
             </div>
         </div>`;
@@ -3526,8 +3542,15 @@ function renderAdminAjustes() {
 /** Añade un nuevo plan vacío al final de promoConfig.planes y re-renderiza ajustes. */
 function adminAddPlan() {
     syncConfigFromUI();
-    let numPlanes = promoConfig.planes.length + 1;
-    promoConfig.planes.push({ id: 'plan-' + Date.now(), nombre: `Plan R${numPlanes}`, servicios: [] });
+    // `planes.length + 1` repetía nombre en cuanto se borraba un plan: con R1 y
+    // R2, borrar R1 y añadir otro volvía a calcular 1+1 y creaba un segundo
+    // "Plan R2". Dos planes homónimos hacen que getSvcConfig resuelva por nombre
+    // al primero, así que los residentes del segundo cobran cupos y horas del
+    // plan equivocado, sin error visible.
+    const usados = new Set(promoConfig.planes.map(p => claveNombreServicio(p.nombre)));
+    let n = promoConfig.planes.length + 1;
+    while (usados.has(claveNombreServicio(`Plan R${n}`))) n++;
+    promoConfig.planes.push({ id: 'plan-' + Date.now(), nombre: `Plan R${n}`, servicios: [] });
     renderAdminAjustes();
 }
 /** Elimina el plan en la posición pIdx y todos sus servicios tras confirmación. */
@@ -3608,10 +3631,18 @@ function syncConfigFromUI() {
     // 2. Recorremos los servicios que pertenecen a este plan concreto
     if (!plan.servicios) plan.servicios = [];
     plan.servicios.forEach((svc, i) => {
-      // D-04: se recorta al leer. Un `Pediatría ` con espacio final es
-      // indistinguible a la vista y no vuelve a resolver a ningún servicio.
+      // D-04: aquí NO se recorta. Recortar al leer parecía higiene inofensiva y
+      // era una migración silenciosa: una config que ya tuviera `PAC Balaguer `
+      // guardado se renombraba sola con solo tocar cualquier campo del panel, y
+      // state.shifts y state.habilitaciones —que guardan el nombre como valor y
+      // como parte de la clave `svc@@plan`— se quedaban apuntando al nombre
+      // viejo. Resultado: las guardias de ese servicio desaparecían del
+      // calendario y el servicio perdía todos sus días habilitados.
+      // El espacio sobrante se DETECTA en getConflictosNombreServicio (choca con
+      // su gemelo sin espacio) y lo corrige el admin a propósito, no la app a su
+      // espalda. Renombrar sigue dejando guardias huérfanas: ver D-07 en el PRD.
       const nomSvc = document.getElementById(`cfg-nom-${pIdx}-${i}`);
-      if (nomSvc) svc.nombre = nomSvc.value.trim();
+      if (nomSvc) svc.nombre = nomSvc.value;
 
       const cupoSvc = document.getElementById(`cfg-cupo-${pIdx}-${i}`);
       if (cupoSvc) svc.cupoMensualTotal = parseInt(cupoSvc.value) || 0;
@@ -3765,6 +3796,10 @@ async function adminSaveConfig() {
   const conflictos = getConflictosNombreServicio();
   if (conflictos.length > 0) {
       renderAdminAjustes();
+      // El repintado deja abiertos los planes en conflicto; llevamos además la
+      // vista al primer campo marcado, que con varios planes queda fuera de
+      // pantalla y el admin no sabría dónde mirar tras cerrar el aviso.
+      document.querySelector('.cfg-nom-dup')?.scrollIntoView({ block: 'center' });
       const detalle = conflictos.map(c => c.tipo === 'vacio'
           ? `• Plan "${c.plan}": ${c.indices.length} servicio(s) sin nombre.`
           : `• Plan "${c.plan}": "${c.nombre}" está repetido ${c.indices.length} veces.`
@@ -4695,7 +4730,7 @@ async function adminDeletePromotion() { if (!confirm("⚠️ ¡ALERTA ROJA! ⚠�
 
 /** Actualiza el buzón de solicitudes entrantes y el historial de operaciones del Mercadillo. */
 function renderMercadoInboxAndLog() {
-  if (!loggedInUser) return; const inb = document.getElementById('merc-inbox'); const log = document.getElementById('merc-log'); let myInbox = (state.trades || []).filter(t => (t.status === 'pending' && t.target === loggedInUser) || (t.status === 'undo_pending' && t.undoRequester !== loggedInUser && (t.requester === loggedInUser || t.target === loggedInUser))); if (myInbox.length === 0) inb.innerHTML = `<span class="merc-note">No tienes solicitudes pendientes.</span>`; else { inb.innerHTML = myInbox.map(t => { let desc = ""; const _r = escapeHtml(t.requester), _t = escapeHtml(t.target), _u = escapeHtml(t.undoRequester), _s1 = escapeHtml(t.s1), _s2 = escapeHtml(t.s2), _ts = escapeHtml(t.timestamp); if (t.status === 'undo_pending') desc = `⚠️ <b>${_u}</b> quiere DESHACER la operación del ${_ts}.`; else if (t.type === 'venta') desc = `💵 <b>${_r}</b> te quiere VENDER su guardia de ${_s1} (${formatDK(t.d1)}).`; else if (t.type === 'compra') desc = `🛒 <b>${_r}</b> te quiere COMPRAR tu guardia de ${_s1} (${formatDK(t.d1)}).`; else if (t.type === 'cambio') desc = `🔄 <b>${_r}</b> quiere CAMBIAR su ${_s1} (${formatDK(t.d1)}) por tu ${_s2} (${formatDK(t.d2)}).`; return `<div class="trade-row trade-row--inbox"><div>${desc}</div><div class="trade-row__actions"><button class="primary trade-btn-ok" onclick="processTrade(${t.id}, true)">✅ Aceptar</button><button class="danger" onclick="processTrade(${t.id}, false)">❌ Rechazar</button></div></div>`; }).join(''); } let allLogs = (state.trades || []).filter(t => {
+  if (!loggedInUser) return; const inb = document.getElementById('merc-inbox'); const log = document.getElementById('merc-log'); let myInbox = (state.trades || []).filter(t => (t.status === 'pending' && t.target === loggedInUser) || (t.status === 'undo_pending' && t.undoRequester !== loggedInUser && (t.requester === loggedInUser || t.target === loggedInUser))); if (myInbox.length === 0) inb.innerHTML = `<span class="merc-note">No tienes solicitudes pendientes.</span>`; else { inb.innerHTML = myInbox.map(t => { let desc = ""; const _r = escapeHtml(t.requester), _u = escapeHtml(t.undoRequester), _s1 = escapeHtml(t.s1), _s2 = escapeHtml(t.s2), _ts = escapeHtml(t.timestamp); if (t.status === 'undo_pending') desc = `⚠️ <b>${_u}</b> quiere DESHACER la operación del ${_ts}.`; else if (t.type === 'venta') desc = `💵 <b>${_r}</b> te quiere VENDER su guardia de ${_s1} (${formatDK(t.d1)}).`; else if (t.type === 'compra') desc = `🛒 <b>${_r}</b> te quiere COMPRAR tu guardia de ${_s1} (${formatDK(t.d1)}).`; else if (t.type === 'cambio') desc = `🔄 <b>${_r}</b> quiere CAMBIAR su ${_s1} (${formatDK(t.d1)}) por tu ${_s2} (${formatDK(t.d2)}).`; return `<div class="trade-row trade-row--inbox"><div>${desc}</div><div class="trade-row__actions"><button class="primary trade-btn-ok" onclick="processTrade(${t.id}, true)">✅ Aceptar</button><button class="danger" onclick="processTrade(${t.id}, false)">❌ Rechazar</button></div></div>`; }).join(''); } let allLogs = (state.trades || []).filter(t => {
     if (!['approved', 'undone', 'undo_pending', 'pending'].includes(t.status)) return false;
     
     let dates = [t.d1];

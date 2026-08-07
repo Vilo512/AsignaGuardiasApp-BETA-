@@ -183,6 +183,11 @@
   /* Ocupación de plazas del servicio, en la cabecera de cada opción del panel.
      En móvil este es el ÚNICO sitio donde se ve (la rejilla no lo pinta). */
   .svc-plazas { font-size: 0.8rem; font-weight: 700; color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap; flex-shrink: 0; margin-left: var(--sp-2); }
+  /* Los <select> del panel de día iban a 0.8rem inline. En escritorio se
+     mantiene ese tamaño; la @media móvil los sube a 16px por el auto-zoom de
+     iOS (ver ahí). El font-size vive aquí, no inline, para que la @media pueda
+     ganarle sin recurrir a !important. */
+  .sheet-select { font-size: 0.8rem; }
   .sheet__grip { display: none; }
   .sheet__title { margin: 0 0 var(--sp-1); font-size: 1.05rem; }
   .sheet__mode { margin-bottom: var(--sp-4); font-weight: 700; font-size: 0.85rem; }
@@ -277,7 +282,9 @@
      es decorativo: sin él el input hereda --text (gris muy claro) del estilo
      global y el nombre queda ilegible sobre blanco. */
   .cfg-nom-input { margin: 0; max-width: 200px; font-size: 1.1rem; font-weight: bold; border: none; background: transparent; color: #1e293b; }
-  .cfg-nom-dup { background: #fef2f2; color: #991b1b; border: 1px solid #dc2626; border-radius: var(--r-sm); padding: 4px 8px; }
+  /* El padding se mantiene en 0.6rem: con 4px el campo marcado se encogía a
+     ~31px, y es justo el que hay que tocar para arreglar el conflicto. */
+  .cfg-nom-dup { background: #fef2f2; color: #991b1b; border: 1px solid #dc2626; border-radius: var(--r-sm); padding: 0.6rem; }
   .cfg-nom-aviso { margin-bottom: 12px; padding: 8px 10px; font-size: 0.8rem; font-weight: 600; color: #991b1b; background: #fef2f2; border-left: 3px solid #dc2626; border-radius: var(--r-sm); }
   .tag-btn { padding: 4px 8px; font-size: 0.75rem; border-radius: 4px; border: 1px solid #cbd5e1; background: white; cursor: pointer; transition: 0.2s; }
   .tag-btn.active { background: var(--dark); color: white; border-color: var(--dark); }
@@ -627,8 +634,13 @@
     .shift-option button { min-height: 44px; }
     /* Los controles de formulario del sheet se quedaban en 40px con el padding
        global: el input de fecha del cambio y los <select> de contraparte y de
-       régimen de guardia. Medido, no estimado. */
-    .sheet input, .sheet select { min-height: 44px; }
+       régimen de guardia. Medido, no estimado.
+       Y 16px de tipografía NO es una elección estética: iOS Safari hace zoom
+       automático de la página al enfocar cualquier control por debajo de 16px,
+       y el viewport no lleva maximum-scale. Con los 0.8rem que tenían, tocar
+       "Ajustar Modalidad" sacaba el bottom sheet de la pantalla y obligaba a
+       pellizcar para volver. Chromium no reproduce esto ni emulando móvil. */
+    .sheet input, .sheet select { min-height: 44px; font-size: 16px; }
 
     /* Mercadillo: la fila de compañero se apila y sus acciones ocupan el ancho,
        en vez de quedar dos botones estrechos pegados al borde derecho. */
