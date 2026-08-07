@@ -252,6 +252,7 @@
      opacity 0.6 de .is-undone, --fest-d cae a 2.5:1 (medido). Ahí el estado
      lo comunican la palabra y el atenuado, y el texto se queda en --text
      (4.7:1 ya contando el opacity). */
+  .trade-tag { white-space: nowrap; }
   .trade-tag--undone { color: var(--text); }
   .trade-tag--undo { color: var(--pac-d); }
   .trade-tag--pending { color: var(--text-2); }
@@ -260,6 +261,10 @@
   /* Igual que .merc-tag: sobre --surface-2, --text-3 se queda en 4.1:1. */
   .trade-row__ts { font-size: 0.7rem; color: var(--text-2); }
   .trade-row__actions button { min-height: 44px; padding: 0 var(--sp-3); font-size: 0.75rem; white-space: nowrap; }
+  /* Mismo caso que .merc-warn: button.danger es --fest-d sobre transparente, y
+     al pasar la fila a --surface-2 se quedaba en 4.36:1. Con --bg detrás sube
+     a 5.82:1 y el botón sigue leyéndose como outline rojo. */
+  .trade-row__actions button.danger { background: var(--bg); }
   /* Aceptar en verde: --ped con texto blanco daba 2.5:1. Con --ped-d y texto
      --bg sube a 8.4:1 sin perder la lectura de "verde = confirmar".
      Va calificado con .trade-row para ganarle a `button.primary`. */
