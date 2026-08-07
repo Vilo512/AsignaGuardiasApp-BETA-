@@ -1,8 +1,8 @@
 # GestionGuardias App — Product Requirements Document
-**Versión:** 1.4  
+**Versión:** 1.5  
 **Estado:** Funcionalidad core cerrada — rediseño visual en curso (§16.2)  
 **Audiencia:** Engineering Lead, desarrolladores, diseñadores  
-**Última actualización:** 25 de julio de 2026
+**Última actualización:** 7 de agosto de 2026
 
 ---
 
@@ -98,6 +98,11 @@ El admin puede activar un **modo de simulación** seleccionando cualquier reside
 - El admin sale mediante el botón "Salir de simulación" del banner
 
 La sesión real del admin no se ve afectada: `loggedInUser`, `isAdmin` e `isDelegado` permanecen inalterados.
+
+> ⚠️ **Desviación conocida — el mercadillo no aplica el bloqueo de escritura (D-06).**
+> El bloqueo se implementa repitiendo `if (simulatedViewUser !== null) { alert(...); return; }` en cada punto de escritura, y **ninguno de los del mercadillo lo tiene**: `openMercadoModal`, `executeBuyRequest`, `executeSellRequest`, `executeSwapRequestDirect`, `processTrade` ni `requestTradeUndo`.
+>
+> El efecto no es una suplantación de identidad —el trade se graba con el `loggedInUser` real, es decir el admin—, sino una incoherencia entre lo que se ve y lo que se escribe: la rejilla está filtrada por el residente simulado, pero la operación que se cree hacer «en su nombre» acaba siendo del admin. Detectado en la auditoría del Paso 5 (ago-2026); pendiente de decidir si el mercadillo se bloquea en simulación o si se habilita explícitamente la operación en nombre de otro.
 
 ### 3.4 Delegados
 - Puede haber **múltiples delegados** por contenedor
@@ -537,6 +542,8 @@ Rediseño por capas hacia una interfaz tipo Google Calendar, **oscura por defect
 | Contraste del texto sobre chip | Blanco por defecto; negro solo si el blanco no alcanza 3:1 (`contrastText()`) |
 | Iconos | SVG inline temables (`icon()`), migrados solo en la vista calendario |
 | Alcance por PR | Una vista por PR; el resto queda en claro hasta que le toque |
+| Suelo de `--text-3` | Está calculado **sobre `--surface`**. Sobre `--surface-2` cae a 4.1:1, así que el texto secundario de cualquier elemento elevado debe ser `--text-2` (4.57:1) |
+| Rojos de aviso sobre `--surface-2` | `--fest-d` se queda en 4.36:1, y un tinte rojo translúcido lo **empeora** porque aclara el fondo. Se hunden a `--bg` (5.82:1) y el aviso lo aporta el borde, como ya hace `button.danger` |
 
 **Regla dura:** los colores de servicio (`svc.color`) son **dato del plan**, elegidos por el usuario y guardados en Supabase. El rediseño no los tokeniza, no los altera y no los almacena en CSS.
 
@@ -547,9 +554,9 @@ Rediseño por capas hacia una interfaz tipo Google Calendar, **oscura por defect
 - [x] Panel de día como **bottom sheet** en móvil (reskin de `openShiftModal`, lógica intacta)
 - [x] Primeras `@media` del proyecto (antes no había ninguna)
 - [x] Objetivos táctiles ≥44px y contrastes verificados con `design-reviewer`
+- [x] Vista mercadillo (`#pane-merc`): rejilla, panel de día como bottom sheet, filtro por clase, buzón y log público
 
 **Pendiente:**
-- [ ] Mercadillo (`#pane-merc`) — comparte rejilla con el calendario, va medio hecho
 - [ ] Resto de vistas: rotación, grupos, perfil, ayuda, admin
 - [ ] Cabecera PWA: `manifest.json`, iconos, `theme-color`, metas apple *(instalable, sin offline)*
 
@@ -685,14 +692,15 @@ EventoAuditoria
 |---|---|---|
 | D-01 | Stack tecnológico | Backend, frontend, base de datos, hosting |
 | D-02 | Fuente de importación de festivos | API pública del calendario laboral español por localidad |
-| D-04 | Unicidad del nombre de servicio dentro de un plan | No hay validación. Dos servicios homónimos rompen el selector de propuesta (§8.5) y todo lookup por nombre (`getSvcConfig`, `isServiceEnabledOnDate`). Riesgo preexistente y transversal |
 | D-05 | Umbral de `contrastText()` | Usa 3:1 (texto grande) sobre chips de ~10.5px que pedirían 4.5:1. Subirlo cambiaría a texto negro los servicios azules y rojos |
+| D-06 | Guardas de simulación en el mercadillo | §3.3 promete que la simulación es "puramente visual", pero ningún punto de escritura del mercadillo comprueba `simulatedViewUser`. Decidir entre bloquearlo (coherente con el resto de la app) o habilitar de forma explícita la operación en nombre de otro, con su rastro en el log |
 
 **Resueltas**
 
 | # | Decisión | Resolución |
 |---|---|---|
 | D-03 | Prioridad de diseño mobile | **Mobile-first.** Los residentes usan la app en el móvil de madrugada; la legibilidad y el tamaño táctil priman sobre la densidad. Ver §16.2 |
+| D-04 | Unicidad del nombre de servicio dentro de un plan | **Obligatoria dentro de cada plan; libre entre planes.** El choque se evalúa recortando espacios e ignorando mayúsculas (dos nombres que solo difieren en caja son indistinguibles a la vista); las tildes sí diferencian. Un nombre vacío cuenta como inválido. `adminSaveConfig` aborta el guardado y señala el conflicto; `adminAddService` autonumera para no crearlo. El mismo nombre en planes distintos sigue siendo válido: es como se expresa que R1 y R2 hacen el mismo servicio con cupos distintos |
 
 ### Changelog
 
@@ -711,4 +719,5 @@ EventoAuditoria
 | v1.1 | §8.5 nuevo: override de emergencia "Activar subasta ya" con directiva de implementación (`activarSubastaGlobal`, ruta paralela sin modificar funciones existentes). |
 | v1.2 | §8: invariante de reset (limpiar `subastasCerradasForzosas`), panel de turno solo en mes activo/futuro. §8.3: calendario abierto durante ventana voluntaria, `isMyTurn` no bloquea en estado `subasta_abierta`. |
 | v1.3 | §8.5 rediseñado: "Propuesta de asignación automática" reemplaza "Activar subasta ya" — propuesta editable con revisión admin antes de ejecutar, no destructiva hasta confirmar. §8.6 nuevo: "Forzamiento de turno por inactividad" — umbral configurable, admin/delegado asigna mínimo al residente inactivo y avanza turno. |
+| v1.5 | §3.3: desviación conocida — el mercadillo no aplica el bloqueo de escritura en simulación (D-06 nueva). §16.2: mercadillo migrado al tema oscuro (Paso 5). D-04 resuelta: unicidad de nombre de servicio obligatoria dentro de cada plan, libre entre planes, con el guardado bloqueado cuando hay choque. |
 | v1.4 | §8.5: **selección por servicio** — el admin elige sobre qué servicio lanzar la propuesta; solo se ofrecen los que tienen huecos obligatorios sin cubrir (`plazasPorDia: 0` = ilimitado queda fuera). Se documenta por qué el reparto encadenado falsea los descartes por saliente. §16.2 nueva: rediseño visual a tema oscuro (paleta, reglas de `svc.color`, estado por vista). §16 renumerada. D-03 resuelta (mobile-first); D-04 y D-05 nuevas. |

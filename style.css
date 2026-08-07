@@ -625,6 +625,10 @@
     .sheet__close { width: 100%; }
     /* Objetivos táctiles holgados en las acciones del día */
     .shift-option button { min-height: 44px; }
+    /* Los controles de formulario del sheet se quedaban en 40px con el padding
+       global: el input de fecha del cambio y los <select> de contraparte y de
+       régimen de guardia. Medido, no estimado. */
+    .sheet input, .sheet select { min-height: 44px; }
 
     /* Mercadillo: la fila de compañero se apila y sus acciones ocupan el ancho,
        en vez de quedar dos botones estrechos pegados al borde derecho. */
