@@ -2304,16 +2304,17 @@ function renderAll() {
 function toggleFilter() {
   if (!loggedInUser) { alert("⚠️ Identifícate primero arriba a la derecha para poder filtrar tus guardias."); return; }
   showOnlyMine = !showOnlyMine;
-  const btnMain = document.getElementById('btn-filter'); const btnMerc = document.getElementById('btn-filter-merc');
-  // 🎨 Rediseño Paso 2: el botón del calendario usa clase (.cal-filter-btn.active),
-  // no estilos inline. El del mercadillo sigue inline hasta el Paso 5.
-  if (showOnlyMine) {
-    if(btnMain) { btnMain.classList.add('active'); btnMain.innerHTML = '👁️ Viendo SOLO las mías'; }
-    if(btnMerc) { btnMerc.style.background = 'var(--merc)'; btnMerc.style.color = 'white'; btnMerc.innerHTML = '👁️ Viendo SOLO las mías'; }
-  } else {
-    if(btnMain) { btnMain.classList.remove('active'); btnMain.innerHTML = '👁️ Ver solo mis guardias'; }
-    if(btnMerc) { btnMerc.style.background = 'transparent'; btnMerc.style.color = 'var(--merc)'; btnMerc.innerHTML = '👁️ Ver solo mis guardias'; }
-  }
+  // 🎨 Rediseño Paso 2 (calendario) y Paso 5 (mercadillo): ambos botones son
+  // .cal-filter-btn y alternan con la clase .active. Sin estilos inline: el acento
+  // morado del mercadillo lo aporta el modificador .cal-filter-btn--merc.
+  const label = showOnlyMine ? '👁️ Viendo SOLO las mías' : '👁️ Ver solo mis guardias';
+  ['btn-filter', 'btn-filter-merc'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.classList.toggle('active', showOnlyMine);
+    btn.setAttribute('aria-pressed', showOnlyMine ? 'true' : 'false');
+    btn.innerHTML = label;
+  });
   checkAutomaticGraduation();
     renderAll();
 }
@@ -3069,6 +3070,8 @@ function renderMercadoCalendar() {
   const y = curDate.getFullYear(), m = curDate.getMonth();
   const grid = document.getElementById('merc-cal-body'); grid.innerHTML = '';
   const computed = getComputedShifts();
+  const _hoy = new Date();
+  const hoyKey = formatDateKey(_hoy.getFullYear(), _hoy.getMonth(), _hoy.getDate());
   if (loggedInUser) { document.getElementById('merc-logged-zone').style.display = 'block'; document.getElementById('merc-unlogged-zone').style.display = 'none'; } 
   else { document.getElementById('merc-logged-zone').style.display = 'none'; document.getElementById('merc-unlogged-zone').style.display = 'block'; }
   for(let i=0; i<getFirstDayOffset(y,m); i++) grid.innerHTML += `<div class="cal-cell empty"></div>`;
@@ -3080,7 +3083,7 @@ function renderMercadoCalendar() {
     const dk = formatDateKey(y, m, d);
     const dayShifts = computed[dk] || {};
     const cell = document.createElement('div');
-    cell.className = `cal-cell ${state.festivos[dk]?'is-festivo':''}`;
+    cell.className = `cal-cell ${state.festivos[dk]?'is-festivo':''} ${dk === hoyKey ? 'is-today' : ''}`.trim();
     const bgStyle = getCellBackgroundStyle(dk, y, m, d, userLevelName);
     if (bgStyle) cell.setAttribute('style', bgStyle);
     let html = `<div class="day-number">${d}</div>`;
@@ -3092,7 +3095,11 @@ function renderMercadoCalendar() {
         if (showOnlyMine && (simulatedViewUser || loggedInUser)) assigned = assigned.filter(u => u === (simulatedViewUser ?? loggedInUser));
         assigned.forEach(u => {
             let isVre = u.startsWith('VRE');
-            html += `<div class="shift-badge ${isVre ? 'bg-vre' : ''}" style="background:${isVre ? '#94a3b8' : svc.color};">👤 ${isVre ? 'VRE' : getInitials(u)}</div>`;
+            // 🎨 Paso 5 (§3.1): mismo badge que el calendario. El texto lo calcula
+            // contrastText() sobre el color REAL del fondo — para el VRE ese fondo es
+            // el #94a3b8 que impone .bg-vre con !important, no svc.color.
+            const bg = isVre ? '#94a3b8' : svc.color;
+            html += `<div class="shift-badge ${isVre ? 'bg-vre' : ''}" style="background:${bg}; color:${contrastText(bg)};">${icon('user')}${isVre ? 'VRE' : escapeHtml(getInitials(u))}</div>`;
         });
     });
     
@@ -3117,57 +3124,109 @@ function openMercadoModal(y, m, d, dk, dayShifts) {
   if (!loggedInUser) return alert("Debes identificarte para usar el Mercadillo.");
   let myShift = null; for (let u in dayShifts) { if (u === loggedInUser) myShift = dayShifts[u]; }
   const past = isPastDate(dk);
-  const modal = document.createElement('div'); modal.className = 'modal-overlay'; modal.id = 'mercado-modal';
-  let html = `<div class="modal"><h3 style="color:var(--merc); border-bottom:2px solid var(--merc); padding-bottom:5px; margin-bottom:1rem;">🛒 Mercadillo: ${d}/${m+1}/${y}</h3><div id="mercado-dynamic">`;
-  
+
+  // 🎨 Paso 5: mismo blindaje que el panel de día (Paso 3). Un doble-toque rápido en
+  // la celda creaba DOS overlays con id="mercado-modal"; como "Cancelar" resuelve por
+  // getElementById, borraba el primero del DOM y no el que se veía.
+  const _prevSheet = document.getElementById('mercado-modal');
+  if (_prevSheet) _prevSheet.remove();
+
+  const modal = document.createElement('div'); modal.className = 'modal-overlay sheet-overlay'; modal.id = 'mercado-modal';
+  let html = `<div class="modal sheet" role="dialog" aria-modal="true">
+    <div class="sheet__grip" aria-hidden="true"></div>
+    <h3 class="sheet__title sheet__title--merc">🛒 Mercadillo: ${d}/${m+1}/${y}</h3>
+    <div id="mercado-dynamic">`;
+
   if (myShift) {
     const sColor = getServiceColor(myShift);
-    html += `<div style="background:#f1f5f9; padding:10px; border-radius:8px; margin-bottom:1rem;"><strong>Tienes guardia de:</strong> <span class="shift-badge" style="background:${sColor}; display:inline-block; margin-left:8px; padding: 4px 8px;">${myShift}</span></div>`;
-    
-    if (past) html += `<p style="color:#64748b; font-size:0.85rem; font-weight:bold; text-align:center;">Esta guardia ya se ha realizado en el mundo real.</p>`;
-    else html += `<button class="primary" style="width:100%; margin-bottom:10px;" onclick="renderMercadoVender('${dk}','${myShift}')">💵 Vender guardia</button><button class="merc" style="width:100%;" onclick="renderMercadoCambiar('${dk}','${myShift}')">🔄 Cambiar por otra fecha / residente</button>`;
+    html += `<div class="merc-mine"><strong>Tienes guardia de:</strong> <span class="svc-chip" style="background:${sColor}; color:${contrastText(sColor)};">${escapeHtml(myShift)}</span></div>`;
+
+    if (past) html += `<p class="merc-note merc-note--center">Esta guardia ya se ha realizado en el mundo real.</p>`;
+    else html += `<button class="primary merc-btn-block" data-act="vender" data-dk="${escapeHtml(dk)}" data-svc="${escapeHtml(myShift)}">💵 Vender guardia</button><button class="merc merc-btn-block" data-act="cambiar" data-dk="${escapeHtml(dk)}" data-svc="${escapeHtml(myShift)}">🔄 Cambiar por otra fecha / residente</button>`;
   } else {
-    let canBuy = false;
-    
+    // Contador real de filas pintadas: antes había un `canBuy` que nunca se ponía a
+    // true, así que el aviso de "no hay guardias" salía incluso listando compañeros.
+    let companeros = 0;
+
     // Bucle restaurado: Evaluamos a cada compañero que tiene guardia este día
     for (let u in dayShifts) {
 			if (u !== loggedInUser && !u.startsWith('VRE')) {
-            html += `<div style="display:flex; justify-content:space-between; align-items:center; border:1px solid #e2e8f0; padding:8px; border-radius:8px; margin-bottom:8px;">`;
-            html += `<div><span style="font-size:0.85rem; font-weight:bold;">${u}</span> <span class="shift-badge" style="background:${getServiceColor(dayShifts[u])}; margin-left:4px;">${dayShifts[u]}</span></div>`;
+            companeros++;
+            const cColor = getServiceColor(dayShifts[u]);
+            html += `<div class="merc-row">`;
+            html += `<div class="merc-row__who"><span class="merc-row__name">${escapeHtml(u)}</span> <span class="svc-chip" style="background:${cColor}; color:${contrastText(cColor)};">${escapeHtml(dayShifts[u])}</span></div>`;
 
             if (past) {
-                html += `<span style="font-size:0.75rem; color:#94a3b8; font-weight:bold;">Pasada</span>`;
+                html += `<span class="merc-tag">Pasada</span>`;
             } else {
                 // Inyección de la regla de intercambio temporal
                 let iCanTake = canUserTakeShift(loggedInUser, u, dk, dayShifts[u]);
                 if (iCanTake) {
-                    html += `<div style="display:flex; gap:4px;"><button class="merc icon-btn" onclick="executeBuyRequest('${dk}', '${dayShifts[u]}', '${u}')">Comprar</button><button class="primary icon-btn" style="background:var(--adu);" onclick="renderMercadoCambiarAjena('${dk}', '${dayShifts[u]}', '${u}')">Cambiar</button></div>`;
+                    const attrs = `data-dk="${escapeHtml(dk)}" data-svc="${escapeHtml(dayShifts[u])}" data-user="${escapeHtml(u)}"`;
+                    html += `<div class="merc-actions"><button class="merc" data-act="comprar" ${attrs}>Comprar</button><button class="primary" style="background:var(--adu-d); color:var(--bg);" data-act="cambiar-ajena" ${attrs}>Cambiar</button></div>`;
                 } else {
-                    html += `<span style="font-size:0.75rem; color:var(--fest); font-weight:bold; background:#fee2e2; padding:2px 6px; border-radius:4px;">Incompatible por R</span>`;
+                    html += `<span class="merc-warn">Incompatible por R</span>`;
                 }
             }
             html += `</div>`;
         }
     }
 
-    if(!canBuy) html += `<p style="font-size:0.85rem; color:#64748b; margin-bottom:1rem;">No hay guardias de compañeros disponibles en este día.</p>`;
-    
+    if(!companeros) html += `<p class="merc-note">No hay guardias de compañeros disponibles en este día.</p>`;
+
     if (!past) {
-        html += `<div style="margin-top:1rem; padding-top:1rem; border-top:1px dashed #cbd5e1;"><h4 style="margin-bottom:0.5rem; color:#64748b;">Comprar a Externo (Añadir guardia)</h4><div style="display:flex; gap:8px; flex-wrap:wrap;">`;
-        getAllUniqueServices().forEach(svc => { 
-            html += `<button class="primary" style="flex:1; background:${getServiceColor(svc.nombre)}; font-size:0.8rem;" onclick="executeBuyRequest('${dk}', '${svc.nombre}', 'Externo')">+ ${svc.nombre}</button>`; 
+        html += `<div class="merc-ext"><h4 class="merc-ext__title">Comprar a Externo (Añadir guardia)</h4><div class="merc-ext__grid">`;
+        getAllUniqueServices().forEach(svc => {
+            const eColor = getServiceColor(svc.nombre);
+            html += `<button class="primary" style="background:${eColor}; color:${contrastText(eColor)};" data-act="comprar-externo" data-dk="${escapeHtml(dk)}" data-svc="${escapeHtml(svc.nombre)}">+ ${escapeHtml(svc.nombre)}</button>`;
         });
         html += `</div></div>`;
     }
   }
-  html += `</div><div style="text-align:right; margin-top:1.5rem;"><button onclick="document.getElementById('mercado-modal').remove()">Cancelar</button></div></div>`;
-  modal.innerHTML = html; document.body.appendChild(modal);
+  html += `</div><div class="sheet__footer"><button class="sheet__close" data-act="close">Cancelar</button></div></div>`;
+  modal.innerHTML = html;
+  _bindMercadoActions(modal);
+  document.body.appendChild(modal);
+}
+
+/**
+ * Enlaza por DOM los controles `[data-act]` del modal del Mercadillo.
+ * Los nombres de servicio y de residente son texto libre del admin: interpolarlos
+ * dentro de un `onclick` rompe el atributo (un `UCI "Peque"` lo parte por la mitad),
+ * el mismo fallo que ya se corrigió en el selector de propuesta. Aquí el valor viaja
+ * por `data-*` escapado y se lee ya decodificado desde `dataset`.
+ * Se llama tras cada repintado de #mercado-dynamic.
+ * @param {HTMLElement} root - contenedor recién pintado
+ */
+function _bindMercadoActions(root) {
+  if (!root) return;
+  root.querySelectorAll('[data-act]').forEach(el => {
+    const act = el.dataset.act;
+    const dk = el.dataset.dk || '', svc = el.dataset.svc || '', user = el.dataset.user || '';
+    const evt = (act === 'load-cambio-targets') ? 'change' : 'click';
+    el.addEventListener(evt, () => {
+      switch (act) {
+        case 'close': document.getElementById('mercado-modal')?.remove(); break;
+        case 'vender': renderMercadoVender(dk, svc); break;
+        case 'cambiar': renderMercadoCambiar(dk, svc); break;
+        case 'comprar': executeBuyRequest(dk, svc, user); break;
+        case 'cambiar-ajena': renderMercadoCambiarAjena(dk, svc, user); break;
+        case 'comprar-externo': executeBuyRequest(dk, svc, 'Externo'); break;
+        case 'confirmar-venta': executeSellRequest(dk, svc); break;
+        case 'load-cambio-targets': loadCambioTargets(dk, svc); break;
+        case 'solicitar-cambio': proxySwapRequest(dk, svc, el.dataset.target || ''); break;
+        case 'enviar-cambio-ajena': executeSwapRequestAjena(dk, svc, user); break;
+      }
+    });
+  });
 }
 
 /** Reemplaza la zona dinámica del modal con el formulario de venta de guardia. */
 function renderMercadoVender(dk, svc) {
     const res = getAllResidents().filter(r => r !== loggedInUser && canUserTakeShift(r, loggedInUser, dk, svc));
-    document.getElementById('mercado-dynamic').innerHTML = `<h4 style="margin-bottom:1rem;">Vender guardia de ${svc}</h4><label style="font-size:0.85rem; color:#64748b;">¿A quién se la vendes?</label><select id="vender-to-user"><option value="">-- Selecciona --</option><option value="Externo">👽 Otro Residente (Externo)</option>${res.map(r => `<option value="${r}">${r}</option>`).join('')}</select><button class="primary" style="width:100%" onclick="executeSellRequest('${dk}', '${svc}')">Confirmar Venta</button>`; 
+    const cont = document.getElementById('mercado-dynamic');
+    cont.innerHTML = `<h4 class="merc-form__title">Vender guardia de ${escapeHtml(svc)}</h4><label class="merc-form__label">¿A quién se la vendes?</label><select id="vender-to-user"><option value="">-- Selecciona --</option><option value="Externo">👽 Otro Residente (Externo)</option>${res.map(r => `<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join('')}</select><button class="primary merc-btn-block" data-act="confirmar-venta" data-dk="${escapeHtml(dk)}" data-svc="${escapeHtml(svc)}">Confirmar Venta</button>`;
+    _bindMercadoActions(cont);
 }
 /** Crea y procesa un trade de tipo 'venta'; si es a Externo, se aprueba directamente. */
 function executeSellRequest(dk, svc) { const target = document.getElementById('vender-to-user').value; if (!target) return alert("Selecciona a quién vender."); const trade = { id: Date.now(), type: 'venta', requester: loggedInUser, target: target, d1: dk, s1: svc, timestamp: new Date().toLocaleString('es-ES') }; let conflicts = checkTradeConflicts(trade); if (conflicts.length > 0) { if (!confirm("⚠️ ATENCIÓN: Conflictos:\n\n" + conflicts.join("\n") + "\n\n¿Proponer de todos modos?")) return; } if (target === 'Externo') { trade.status = 'approved'; alert("Venta a externo realizada."); } else { trade.status = 'pending'; alert(`Solicitud enviada a ${target}.`); } if(!state.trades) state.trades = []; state.trades.push(trade); _notifyNewTrade(trade); saveState(); document.getElementById('mercado-modal').remove(); checkAutomaticGraduation();
@@ -4538,7 +4597,7 @@ async function adminDeletePromotion() { if (!confirm("⚠️ ¡ALERTA ROJA! ⚠�
 
 /** Actualiza el buzón de solicitudes entrantes y el historial de operaciones del Mercadillo. */
 function renderMercadoInboxAndLog() {
-  if (!loggedInUser) return; const inb = document.getElementById('merc-inbox'); const log = document.getElementById('merc-log'); let myInbox = (state.trades || []).filter(t => (t.status === 'pending' && t.target === loggedInUser) || (t.status === 'undo_pending' && t.undoRequester !== loggedInUser && (t.requester === loggedInUser || t.target === loggedInUser))); if (myInbox.length === 0) inb.innerHTML = `<span style="font-size:0.85rem; color:#94a3b8;">No tienes solicitudes pendientes.</span>`; else { inb.innerHTML = myInbox.map(t => { let desc = ""; if (t.status === 'undo_pending') desc = `⚠️ <b>${t.undoRequester}</b> quiere DESHACER la operación del ${t.timestamp}.`; else if (t.type === 'venta') desc = `💵 <b>${t.requester}</b> te quiere VENDER su guardia de ${t.s1} (${formatDK(t.d1)}).`; else if (t.type === 'compra') desc = `🛒 <b>${t.requester}</b> te quiere COMPRAR tu guardia de ${t.s1} (${formatDK(t.d1)}).`; else if (t.type === 'cambio') desc = `🔄 <b>${t.requester}</b> quiere CAMBIAR su ${t.s1} (${formatDK(t.d1)}) por tu ${t.s2} (${formatDK(t.d2)}).`; return `<div class="trade-row" style="border-left:3px solid var(--merc);"><div>${desc}</div><div style="display:flex; gap:8px;"><button class="primary" style="background:var(--ped); font-size:0.75rem;" onclick="processTrade(${t.id}, true)">✅ Aceptar</button><button class="danger" style="font-size:0.75rem;" onclick="processTrade(${t.id}, false)">❌ Rechazar</button></div></div>`; }).join(''); } let allLogs = (state.trades || []).filter(t => {
+  if (!loggedInUser) return; const inb = document.getElementById('merc-inbox'); const log = document.getElementById('merc-log'); let myInbox = (state.trades || []).filter(t => (t.status === 'pending' && t.target === loggedInUser) || (t.status === 'undo_pending' && t.undoRequester !== loggedInUser && (t.requester === loggedInUser || t.target === loggedInUser))); if (myInbox.length === 0) inb.innerHTML = `<span class="merc-note">No tienes solicitudes pendientes.</span>`; else { inb.innerHTML = myInbox.map(t => { let desc = ""; if (t.status === 'undo_pending') desc = `⚠️ <b>${t.undoRequester}</b> quiere DESHACER la operación del ${t.timestamp}.`; else if (t.type === 'venta') desc = `💵 <b>${t.requester}</b> te quiere VENDER su guardia de ${t.s1} (${formatDK(t.d1)}).`; else if (t.type === 'compra') desc = `🛒 <b>${t.requester}</b> te quiere COMPRAR tu guardia de ${t.s1} (${formatDK(t.d1)}).`; else if (t.type === 'cambio') desc = `🔄 <b>${t.requester}</b> quiere CAMBIAR su ${t.s1} (${formatDK(t.d1)}) por tu ${t.s2} (${formatDK(t.d2)}).`; return `<div class="trade-row trade-row--inbox"><div>${desc}</div><div class="trade-row__actions"><button class="primary trade-btn-ok" onclick="processTrade(${t.id}, true)">✅ Aceptar</button><button class="danger" onclick="processTrade(${t.id}, false)">❌ Rechazar</button></div></div>`; }).join(''); } let allLogs = (state.trades || []).filter(t => {
     if (!['approved', 'undone', 'undo_pending', 'pending'].includes(t.status)) return false;
     
     let dates = [t.d1];
@@ -4559,7 +4618,7 @@ function renderMercadoInboxAndLog() {
         if (maxDateObj.getMonth() !== curDate.getMonth() || maxDateObj.getFullYear() !== curDate.getFullYear()) return false;
     }
     return true;
-}); if (allLogs.length === 0) log.innerHTML = `<span style="font-size:0.85rem; color:#94a3b8;">El historial de mercado está vacío.</span>`; else { log.innerHTML = allLogs.slice().reverse().map(t => { let desc = ""; let isPending = t.status === 'pending'; if (t.type === 'venta') desc = isPending ? `⏳ <b>${t.requester}</b> quiere VENDER su ${t.s1} (${formatDK(t.d1)}) a <b>${t.target}</b>.` : `💵 <b>${t.requester}</b> vendió su ${t.s1} (${formatDK(t.d1)}) a <b>${t.target}</b>.`; else if (t.type === 'compra') desc = isPending ? `⏳ <b>${t.requester}</b> quiere COMPRAR ${t.s1} (${formatDK(t.d1)}) a <b>${t.target}</b>.` : `🛒 <b>${t.requester}</b> compró ${t.s1} (${formatDK(t.d1)}) de <b>${t.target}</b>.`; else if (t.type === 'cambio') desc = isPending ? `⏳ <b>${t.requester}</b> quiere CAMBIAR su ${t.s1} (${formatDK(t.d1)}) por la de <b>${t.target}</b> (${formatDK(t.d2)}).` : `🔄 <b>${t.requester}</b> cambió su ${t.s1} (${formatDK(t.d1)}) por la de <b>${t.target}</b> (${formatDK(t.d2)}).`; let actionBtn = ""; if (t.status === 'approved' && (t.requester === loggedInUser || t.target === loggedInUser)) actionBtn = `<button class="danger icon-btn" style="font-size:0.7rem; padding:2px 6px;" onclick="requestTradeUndo(${t.id})">Deshacer</button>`; else if (isPending && t.requester === loggedInUser) actionBtn = `<button class="danger icon-btn" style="font-size:0.7rem; padding:2px 6px;" onclick="cancelPendingTrade(${t.id})">Cancelar Solicitud</button>`; if (isAdmin || isDelegado) actionBtn += `<button class="danger icon-btn" style="font-size:0.7rem; padding:2px 6px; margin-left:4px;" onclick="adminForceBorrarTrade(${t.id})" title="Eliminar entrada y guardia del calendario">🗑 Borrar</button>`; let statusStyle = ""; let statusLabel = ""; if (t.status === 'undone') { statusStyle = "opacity:0.5; background:#f1f5f9;"; statusLabel = '<b style="color:var(--fest);">(DESHECHO)</b>'; } else if (t.status === 'undo_pending') { statusStyle = "border-left: 3px solid var(--pac);"; statusLabel = '<b style="color:var(--pac);">(DESHACER PENDIENTE)</b>'; } else if (t.status === 'pending') { statusStyle = "border-left: 3px solid #cbd5e1; background:#f8fafc;"; statusLabel = '<b style="color:#64748b;">(PENDIENTE)</b>'; } return `<div class="trade-row" style="${statusStyle}"><div style="display:flex; justify-content:space-between; align-items:flex-start;"><span>${desc} ${statusLabel}</span>${actionBtn}</div><span style="font-size:0.7rem; color:#94a3b8;">${t.timestamp}</span></div>`; }).join(''); }
+}); if (allLogs.length === 0) log.innerHTML = `<span class="merc-note">El historial de mercado está vacío.</span>`; else { log.innerHTML = allLogs.slice().reverse().map(t => { let desc = ""; let isPending = t.status === 'pending'; if (t.type === 'venta') desc = isPending ? `⏳ <b>${t.requester}</b> quiere VENDER su ${t.s1} (${formatDK(t.d1)}) a <b>${t.target}</b>.` : `💵 <b>${t.requester}</b> vendió su ${t.s1} (${formatDK(t.d1)}) a <b>${t.target}</b>.`; else if (t.type === 'compra') desc = isPending ? `⏳ <b>${t.requester}</b> quiere COMPRAR ${t.s1} (${formatDK(t.d1)}) a <b>${t.target}</b>.` : `🛒 <b>${t.requester}</b> compró ${t.s1} (${formatDK(t.d1)}) de <b>${t.target}</b>.`; else if (t.type === 'cambio') desc = isPending ? `⏳ <b>${t.requester}</b> quiere CAMBIAR su ${t.s1} (${formatDK(t.d1)}) por la de <b>${t.target}</b> (${formatDK(t.d2)}).` : `🔄 <b>${t.requester}</b> cambió su ${t.s1} (${formatDK(t.d1)}) por la de <b>${t.target}</b> (${formatDK(t.d2)}).`; let actionBtn = ""; if (t.status === 'approved' && (t.requester === loggedInUser || t.target === loggedInUser)) actionBtn = `<button class="danger" onclick="requestTradeUndo(${t.id})">Deshacer</button>`; else if (isPending && t.requester === loggedInUser) actionBtn = `<button class="danger" onclick="cancelPendingTrade(${t.id})">Cancelar Solicitud</button>`; if (isAdmin || isDelegado) actionBtn += `<button class="danger" onclick="adminForceBorrarTrade(${t.id})" title="Eliminar entrada y guardia del calendario">🗑 Borrar</button>`; let statusClass = ""; let statusLabel = ""; if (t.status === 'undone') { statusClass = " is-undone"; statusLabel = '<b class="trade-tag trade-tag--undone">(DESHECHO)</b>'; } else if (t.status === 'undo_pending') { statusClass = " is-undo-pending"; statusLabel = '<b class="trade-tag trade-tag--undo">(DESHACER PENDIENTE)</b>'; } else if (t.status === 'pending') { statusClass = " is-pending"; statusLabel = '<b class="trade-tag trade-tag--pending">(PENDIENTE)</b>'; } return `<div class="trade-row${statusClass}"><div class="trade-row__head"><span>${desc} ${statusLabel}</span><span class="trade-row__actions">${actionBtn}</span></div><span class="trade-row__ts">${t.timestamp}</span></div>`; }).join(''); }
 }
 /** Cancela una solicitud de trade pendiente enviada por el usuario. */
 async function cancelPendingTrade(id) { if (!confirm("¿Cancelar solicitud?")) return; state.trades = state.trades.filter(t => t.id !== id); await saveState(); checkAutomaticGraduation();
@@ -4609,13 +4668,13 @@ async function requestTradeUndo(id) { let t = state.trades.find(x => x.id === id
     renderAll(); }
 
 /** Muestra el formulario de cambio propio: elige la fecha destino para intercambiar la guardia del usuario. */
-function renderMercadoCambiar(dk, svc) { const container = document.getElementById('mercado-dynamic'); container.innerHTML = `<h4 style="margin-bottom:1rem;">Cambiar guardia de ${svc}</h4><label style="font-size:0.85rem; color:#64748b;">1. Elige la fecha objetivo:</label><input type="date" id="cambio-date" onchange="loadCambioTargets('${dk}', '${svc}')"><div id="cambio-targets-area" style="margin-top:1rem;"></div>`; }
+function renderMercadoCambiar(dk, svc) { const container = document.getElementById('mercado-dynamic'); container.innerHTML = `<h4 class="merc-form__title">Cambiar guardia de ${escapeHtml(svc)}</h4><label class="merc-form__label">1. Elige la fecha objetivo:</label><input type="date" id="cambio-date" data-act="load-cambio-targets" data-dk="${escapeHtml(dk)}" data-svc="${escapeHtml(svc)}"><div id="cambio-targets-area" class="merc-form__area"></div>`; _bindMercadoActions(container); }
 /** Carga el selector de contrapartes disponibles para la fecha destino elegida en el cambio propio. */
-function loadCambioTargets(myDk, mySvc) { const dateVal = document.getElementById('cambio-date').value; if (!dateVal) return; const [y, mStr, dStr] = dateVal.split('-'); const targetDk = `${y}_${mStr}_${dStr}`; if (isPastDate(targetDk)) { document.getElementById('cambio-targets-area').innerHTML = `<p style="color:var(--fest); font-size:0.85rem;">No puedes seleccionar una fecha del pasado para hacer un cambio.</p>`; return; } const computed = getComputedShifts(); const dayShifts = computed[targetDk] || {}; let html = `<label style="font-size:0.85rem; color:#64748b;">2. ¿Con quién la cambias?</label><select id="cambio-to-user"><option value="">-- Selecciona opción --</option>`; html += `<option value="Externo|">👽 Mover a este día (Otro Residente Externo)</option>`; for (let u in dayShifts) { if (u !== loggedInUser && !u.startsWith('VRE')) { if (canUserTakeShift(u, loggedInUser, myDk, mySvc) && canUserTakeShift(loggedInUser, u, targetDk, dayShifts[u])) { html += `<option value="${u}|${dayShifts[u]}">🔄 ${u} (Su ${dayShifts[u]})</option>`; } } } html += `</select><button class="merc" style="width:100%; margin-top:10px;" onclick="proxySwapRequest('${myDk}', '${mySvc}', '${targetDk}')">Solicitar Cambio</button>`; document.getElementById('cambio-targets-area').innerHTML = html; }
+function loadCambioTargets(myDk, mySvc) { const dateVal = document.getElementById('cambio-date').value; if (!dateVal) return; const [y, mStr, dStr] = dateVal.split('-'); const targetDk = `${y}_${mStr}_${dStr}`; const area = document.getElementById('cambio-targets-area'); if (isPastDate(targetDk)) { area.innerHTML = `<p class="merc-error">No puedes seleccionar una fecha del pasado para hacer un cambio.</p>`; return; } const computed = getComputedShifts(); const dayShifts = computed[targetDk] || {}; let html = `<label class="merc-form__label">2. ¿Con quién la cambias?</label><select id="cambio-to-user"><option value="">-- Selecciona opción --</option>`; html += `<option value="Externo|">👽 Mover a este día (Otro Residente Externo)</option>`; for (let u in dayShifts) { if (u !== loggedInUser && !u.startsWith('VRE')) { if (canUserTakeShift(u, loggedInUser, myDk, mySvc) && canUserTakeShift(loggedInUser, u, targetDk, dayShifts[u])) { html += `<option value="${escapeHtml(u + '|' + dayShifts[u])}">🔄 ${escapeHtml(u)} (Su ${escapeHtml(dayShifts[u])})</option>`; } } } html += `</select><button class="merc merc-btn-block" data-act="solicitar-cambio" data-dk="${escapeHtml(myDk)}" data-svc="${escapeHtml(mySvc)}" data-target="${escapeHtml(targetDk)}">Solicitar Cambio</button>`; area.innerHTML = html; _bindMercadoActions(area); }
 /** Lee el select de contrapartes y delega en executeSwapRequestDirect con los parámetros correctos. */
 function proxySwapRequest(myDk, mySvc, targetDk) { const val = document.getElementById('cambio-to-user').value; if (!val) return alert("Selecciona una opción de cambio."); const [targetUser, targetSvc] = val.split('|'); executeSwapRequestDirect(myDk, mySvc, targetDk, targetSvc, targetUser); }
 /** Muestra el formulario para proponer un cambio sobre la guardia de otro residente: elige tu guardia a ofrecer. */
-function renderMercadoCambiarAjena(targetDk, targetSvc, targetUser) { const container = document.getElementById('mercado-dynamic'); if (!canUserTakeShift(loggedInUser, targetUser, targetDk, targetSvc)) { container.innerHTML = `<p style="color:var(--fest); padding:10px; background:#fee2e2; border-radius:8px;">⚠️ Tu nivel actual no te permite asumir esta guardia de ${targetSvc}.</p>`; return; } const computed = getComputedShifts(); let myFutureShifts = []; for (let dk in computed) { if (!isPastDate(dk) && computed[dk][loggedInUser]) { if (canUserTakeShift(targetUser, loggedInUser, dk, computed[dk][loggedInUser])) { myFutureShifts.push({dk: dk, svc: computed[dk][loggedInUser]}); } } } let html = `<h4 style="margin-bottom:1rem; color:var(--adu);">Ofrecer cambio a ${targetUser}</h4><div style="background:#f8fafc; padding:8px; border-radius:8px; margin-bottom:1rem; font-size:0.85rem; border:1px solid #cbd5e1;">Te quedarías su: <b>${targetSvc} (${formatDK(targetDk)})</b></div>`; if (myFutureShifts.length === 0) { html += `<p style="font-size:0.85rem; color:var(--fest); font-weight:bold;">No tienes guardias futuras programadas para ofrecerle a cambio.</p>`; } else { html += `<label style="font-size:0.85rem; color:#64748b;">¿Qué guardia tuya le ofreces a cambio?</label><select id="cambio-ajena-sel"><option value="">-- Selecciona una de tus guardias --</option>${myFutureShifts.map(s => `<option value="${s.dk}|${s.svc}">${formatDK(s.dk)} - ${s.svc}</option>`).join('')}</select><button class="primary" style="width:100%; margin-top:10px; background:var(--adu);" onclick="executeSwapRequestAjena('${targetDk}', '${targetSvc}', '${targetUser}')">Enviar Propuesta de Cambio</button>`; } container.innerHTML = html; }
+function renderMercadoCambiarAjena(targetDk, targetSvc, targetUser) { const container = document.getElementById('mercado-dynamic'); if (!canUserTakeShift(loggedInUser, targetUser, targetDk, targetSvc)) { container.innerHTML = `<p class="merc-error merc-error--block">⚠️ Tu nivel actual no te permite asumir esta guardia de ${escapeHtml(targetSvc)}.</p>`; return; } const computed = getComputedShifts(); let myFutureShifts = []; for (let dk in computed) { if (!isPastDate(dk) && computed[dk][loggedInUser]) { if (canUserTakeShift(targetUser, loggedInUser, dk, computed[dk][loggedInUser])) { myFutureShifts.push({dk: dk, svc: computed[dk][loggedInUser]}); } } } let html = `<h4 class="merc-form__title merc-form__title--adu">Ofrecer cambio a ${escapeHtml(targetUser)}</h4><div class="merc-recap">Te quedarías su: <b>${escapeHtml(targetSvc)} (${formatDK(targetDk)})</b></div>`; if (myFutureShifts.length === 0) { html += `<p class="merc-error">No tienes guardias futuras programadas para ofrecerle a cambio.</p>`; } else { html += `<label class="merc-form__label">¿Qué guardia tuya le ofreces a cambio?</label><select id="cambio-ajena-sel"><option value="">-- Selecciona una de tus guardias --</option>${myFutureShifts.map(s => `<option value="${escapeHtml(s.dk + '|' + s.svc)}">${formatDK(s.dk)} - ${escapeHtml(s.svc)}</option>`).join('')}</select><button class="primary merc-btn-block" style="background:var(--adu-d); color:var(--bg);" data-act="enviar-cambio-ajena" data-dk="${escapeHtml(targetDk)}" data-svc="${escapeHtml(targetSvc)}" data-user="${escapeHtml(targetUser)}">Enviar Propuesta de Cambio</button>`; } container.innerHTML = html; _bindMercadoActions(container); }
 /** Lee el select de "mi guardia a ofrecer" y ejecuta el cambio con la guardia ajena. */
 function executeSwapRequestAjena(targetDk, targetSvc, targetUser) { const val = document.getElementById('cambio-ajena-sel').value; if(!val) return alert("Selecciona una guardia tuya para ofrecer."); const [myDk, mySvc] = val.split('|'); executeSwapRequestDirect(myDk, mySvc, targetDk, targetSvc, targetUser); }
 // ============================================================

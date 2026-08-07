@@ -97,6 +97,10 @@
   .cal-subtitle { font-size: 0.75rem; color: var(--text-2); font-weight: bold; }
   .cal-filter-btn { margin-top: var(--sp-1); padding: 8px 14px; min-height: 44px; font-size: 0.75rem; border-radius: var(--r-pill); border: 1px solid var(--border-2); background: transparent; color: var(--text-2); }
   .cal-filter-btn.active { background: var(--surface-2); color: var(--text); border-color: var(--text-2); }
+  /* Variante del mercadillo (Paso 5): mismo componente, acento morado dark-safe.
+     --merc-d sobre --surface da 4.99:1; el legacy --merc se quedaba en 3.2:1. */
+  .cal-filter-btn--merc { border-color: var(--merc-d); color: var(--merc-d); }
+  .cal-filter-btn--merc.active { background: var(--merc-d); color: var(--bg); border-color: var(--merc-d); }
 
   .cal-header-nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
   /* minmax(0,1fr) y no 1fr: con `1fr` el contenido puede ENSANCHAR su columna
@@ -135,10 +139,10 @@
   .cal-plaza__dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(232,234,237,0.45); }
 
   /* Shift Badges — el color de texto lo calcula contrastText() en app.js */
-  /* `color: #fff` es la RED DE SEGURIDAD de las vistas aún no migradas (mercadillo):
-     sus badges no llevan color inline y, sin esto, heredarían el texto oscuro del
-     contexto claro de .modal:not(.sheet) sobre un svc.color oscuro = ilegible.
-     El calendario lo sobrescribe inline con contrastText(), que gana al ser inline. */
+  /* `color: #fff` es la RED DE SEGURIDAD: un badge que se pinte sin color inline
+     heredaría el texto oscuro del contexto claro de .modal:not(.sheet) sobre un
+     svc.color oscuro = ilegible. Calendario y mercadillo lo sobrescriben inline
+     con contrastText(), que gana al ser inline. */
   .shift-badge { font-size: 0.66rem; padding: 3px 5px; border-radius: var(--r-sm); margin-bottom: 2px; color: #fff; font-weight: 700; letter-spacing: 0.2px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; justify-content: center; gap: 3px; }
   .shift-badge svg { width: 11px; height: 11px; flex-shrink: 0; }
   .bg-vre { background: #94a3b8 !important; }
@@ -147,9 +151,10 @@
   .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); display: flex; justify-content: center; align-items: center; z-index: 1000; }
   .modal { background: var(--surface); color: var(--text); border: 1px solid var(--border); padding: 1.5rem; border-radius: var(--r-lg); width: 90%; max-width: 550px; max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-2); }
   /* ============================================================
-     MODALES AÚN NO MIGRADOS — crear promoción (app.js:809), mercadillo
-     (app.js:3089), importar festivos (app.js:4135) y propuesta de mes
-     (app.js:5864). Su contenido son estilos inline del tema claro
+     MODALES AÚN NO MIGRADOS — crear promoción (app.js:809), importar
+     festivos (app.js:4135) y propuesta de mes (app.js:5864).
+     El del mercadillo salió de aquí en el Paso 5: ya lleva .sheet.
+     Su contenido son estilos inline del tema claro
      (#64748b, #f8fafc, background:white...). Hasta que les toque su capa
      (Pasos 5-6) se aíslan en contexto CLARO y legible, en lugar de
      dejarlos con texto a ~2.9:1 sobre fondo oscuro.
@@ -190,11 +195,75 @@
   .sheet__mine { display: flex; flex-direction: column; gap: 6px; margin-top: var(--sp-2); background: rgba(251,191,36,0.10); padding: var(--sp-3); border-radius: var(--r-md); border: 1px solid var(--pac-d); }
 
   @keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
-  
+
+  /* ============================================================
+     MERCADILLO (Paso 5). La rejilla y el panel de día son los mismos
+     componentes del calendario (.cal-grid, .cal-cell, .sheet): aquí solo
+     va lo propio de la vista — el acento morado y las filas de operación.
+     ============================================================ */
+  .merc-card { border: 2px solid var(--merc-d); }
+  .cal-title--merc, .cal-subtitle--merc { color: var(--merc-d); }
+  .merc-zone__title { margin-bottom: var(--sp-2); font-size: 1.05rem; }
+  .merc-zone__title--inbox { color: var(--adu-d); }
+  .merc-unlogged { text-align: center; background: rgba(251,191,36,0.12); border-left: 4px solid var(--pac-d); color: var(--text); }
+
+  /* Panel de día del mercadillo */
+  .sheet__title--merc { color: var(--merc-d); border-bottom: 2px solid var(--merc-d); padding-bottom: var(--sp-2); margin-bottom: var(--sp-4); }
+  .merc-mine { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; background: var(--surface-2); border: 1px solid var(--border); padding: var(--sp-3); border-radius: var(--r-md); margin-bottom: var(--sp-4); }
+  .merc-row { display: flex; justify-content: space-between; align-items: center; gap: var(--sp-2); flex-wrap: wrap; background: var(--surface-2); border: 1px solid var(--border); padding: var(--sp-2); border-radius: var(--r-md); margin-bottom: var(--sp-2); }
+  .merc-row__who { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; min-width: 0; }
+  .merc-row__name { font-size: 0.85rem; font-weight: 700; color: var(--text); }
+  /* 44px: son los dos botones que se pulsan de madrugada. Antes eran .icon-btn (~26px). */
+  .merc-actions { display: flex; gap: var(--sp-2); }
+  .merc-actions button { min-height: 44px; padding: 0 var(--sp-4); font-size: 0.8rem; }
+  .merc-btn-block { width: 100%; min-height: 44px; margin-top: var(--sp-2); }
+  .merc-note { display: block; font-size: 0.85rem; color: var(--text-2); margin-bottom: var(--sp-2); }
+  .merc-note--center { text-align: center; font-weight: 700; }
+  /* --text-2 y no --text-3: el suelo de --text-3 está calculado sobre --surface;
+     sobre --surface-2 (que es el fondo de estas filas) cae a 4.1:1. Medido. */
+  .merc-tag { font-size: 0.75rem; font-weight: 700; color: var(--text-2); }
+  /* Medido: --fest-d no llega a 4.5:1 sobre --surface-2 (se queda en 4.36) y el
+     tinte rojo translúcido lo EMPEORA, porque aclara el fondo (3.59). Estas
+     etiquetas se hunden a --bg, donde el mismo rojo da 5.8:1, y el aviso lo
+     aporta el borde — el mismo patrón de outline que ya usa button.danger. */
+  .merc-warn { font-size: 0.75rem; font-weight: 700; color: var(--fest-d); background: var(--bg); border: 1px solid var(--fest-d); padding: 4px 8px; border-radius: var(--r-sm); }
+  .merc-error { font-size: 0.85rem; font-weight: 700; color: var(--fest-d); }
+  .merc-error--block { background: var(--bg); border-left: 3px solid var(--fest-d); padding: var(--sp-3); border-radius: var(--r-md); }
+  .merc-ext { margin-top: var(--sp-4); padding-top: var(--sp-4); border-top: 1px dashed var(--border-2); }
+  .merc-ext__title { margin-bottom: var(--sp-2); font-size: 0.9rem; color: var(--text-2); }
+  .merc-ext__grid { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+  .merc-ext__grid button { flex: 1 1 140px; min-height: 44px; font-size: 0.8rem; }
+  .merc-form__title { margin-bottom: var(--sp-4); font-size: 1rem; }
+  .merc-form__title--adu { color: var(--adu-d); }
+  .merc-form__label { display: block; font-size: 0.85rem; color: var(--text-2); margin-bottom: var(--sp-2); }
+  .merc-form__area { margin-top: var(--sp-4); }
+  .merc-recap { background: var(--surface-2); border: 1px solid var(--border); padding: var(--sp-2); border-radius: var(--r-md); margin-bottom: var(--sp-4); font-size: 0.85rem; }
+
   .rot-group { background: var(--light); padding: 1rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid #e2e8f0; }
   .editor-row { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
   .account-row { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem; border-bottom: 1px solid #e2e8f0; }
-  .trade-row { display: flex; flex-direction: column; gap: 6px; padding: 10px; background: white; border: 1px solid #cbd5e1; border-radius: 8px; margin-bottom: 8px; font-size: 0.85rem; }
+  /* Buzón y log del mercadillo (Paso 5) */
+  .trade-row { display: flex; flex-direction: column; gap: 6px; padding: var(--sp-3); background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-md); margin-bottom: var(--sp-2); font-size: 0.85rem; }
+  .trade-row--inbox { border-left: 3px solid var(--merc-d); }
+  .trade-row.is-undone { opacity: 0.6; }
+  .trade-row.is-undo-pending { border-left: 3px solid var(--pac-d); }
+  .trade-row.is-pending { border-left: 3px solid var(--border-2); }
+  /* Etiqueta de estado. El rojo NO es viable en la fila deshecha: con el
+     opacity 0.6 de .is-undone, --fest-d cae a 2.5:1 (medido). Ahí el estado
+     lo comunican la palabra y el atenuado, y el texto se queda en --text
+     (4.7:1 ya contando el opacity). */
+  .trade-tag--undone { color: var(--text); }
+  .trade-tag--undo { color: var(--pac-d); }
+  .trade-tag--pending { color: var(--text-2); }
+  .trade-row__head { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--sp-2); }
+  .trade-row__actions { display: flex; gap: var(--sp-2); flex-shrink: 0; }
+  /* Igual que .merc-tag: sobre --surface-2, --text-3 se queda en 4.1:1. */
+  .trade-row__ts { font-size: 0.7rem; color: var(--text-2); }
+  .trade-row__actions button { min-height: 44px; padding: 0 var(--sp-3); font-size: 0.75rem; white-space: nowrap; }
+  /* Aceptar en verde: --ped con texto blanco daba 2.5:1. Con --ped-d y texto
+     --bg sube a 8.4:1 sin perder la lectura de "verde = confirmar".
+     Va calificado con .trade-row para ganarle a `button.primary`. */
+  .trade-row button.trade-btn-ok { background: var(--ped-d); color: var(--bg); }
 
   .cfg-card { background: white; border: 1px solid #cbd5e1; border-radius: 8px; padding: 15px; margin-bottom: 15px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
   .tag-btn { padding: 4px 8px; font-size: 0.75rem; border-radius: 4px; border: 1px solid #cbd5e1; background: white; cursor: pointer; transition: 0.2s; }
@@ -543,4 +612,11 @@
     .sheet__close { width: 100%; }
     /* Objetivos táctiles holgados en las acciones del día */
     .shift-option button { min-height: 44px; }
+
+    /* Mercadillo: la fila de compañero se apila y sus acciones ocupan el ancho,
+       en vez de quedar dos botones estrechos pegados al borde derecho. */
+    .merc-row { flex-direction: column; align-items: stretch; }
+    .merc-actions { width: 100%; }
+    .merc-actions button, .trade-row__actions button { flex: 1; }
+    .merc-ext__grid button { flex: 1 1 100%; }
   }
