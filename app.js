@@ -3255,12 +3255,82 @@ function executeBuyRequest(dk, svc, targetUser) { if (targetUser !== 'Externo' &
 // Dependencias externas: promoConfig, supabaseClient, currentUserProfile
 // Helpers que usa: syncConfigFromUI, saveState, setStatus, renderAll, checkAutomaticGraduation, MONTHS
 // ============================================================
+/**
+ * Normaliza un nombre de servicio para compararlo: sin espacios sobrantes y en
+ * minúsculas. `Pediatría ` y `pediatría` son el mismo servicio para quien lo
+ * escribe y dos distintos para el código, y esa asimetría es justo la que
+ * produce guardias huérfanas que no encuentran su configuración.
+ * @param {string} nombre
+ * @returns {string} clave de comparación
+ */
+function claveNombreServicio(nombre) {
+    return String(nombre ?? '').trim().toLowerCase();
+}
+
+/**
+ * D-04. Detecta nombres de servicio inválidos DENTRO de cada plan.
+ *
+ * El mismo nombre en planes DISTINTOS es legítimo y está en uso: es como se
+ * expresa "R1 y R2 hacen Pediatría con cupos distintos", y getAllUniqueServices()
+ * lo deduplica a propósito. Lo que rompe es repetirlo dentro del mismo plan:
+ * todo lookup se hace por nombre (getSvcConfig, isServiceEnabledOnDate,
+ * getServiceColor, el selector de propuesta) y todos devuelven SIEMPRE el
+ * primero, así que el segundo servicio existe en la configuración pero es
+ * inalcanzable — sus reglas, su cupo y su color no se aplican nunca.
+ *
+ * Un nombre vacío es igual de destructivo: state.shifts guarda el nombre como
+ * valor, y una cadena vacía no vuelve a resolver a ningún servicio.
+ *
+ * @returns {Array<{tipo:'duplicado'|'vacio', plan:string, pIdx:number, nombre:string, indices:number[]}>}
+ */
+function getConflictosNombreServicio() {
+    const conflictos = [];
+    (promoConfig.planes || []).forEach((plan, pIdx) => {
+        const porClave = new Map();
+        const vacios = [];
+        (plan.servicios || []).forEach((svc, i) => {
+            const clave = claveNombreServicio(svc.nombre);
+            if (!clave) { vacios.push(i); return; }
+            if (!porClave.has(clave)) porClave.set(clave, []);
+            porClave.get(clave).push(i);
+        });
+        if (vacios.length) conflictos.push({ tipo: 'vacio', plan: plan.nombre, pIdx, nombre: '', indices: vacios });
+        porClave.forEach(indices => {
+            if (indices.length > 1) {
+                conflictos.push({ tipo: 'duplicado', plan: plan.nombre, pIdx, nombre: plan.servicios[indices[0]].nombre, indices });
+            }
+        });
+    });
+    return conflictos;
+}
+
+/**
+ * Devuelve un nombre libre dentro del plan a partir de una base ("Nuevo
+ * Servicio", "Nuevo Servicio 2"...). Evita que el camino más común —pulsar
+ * "+ Servicio" dos veces— cree ya un duplicado que luego bloquea el guardado.
+ * @param {object} plan
+ * @param {string} base
+ * @returns {string}
+ */
+function generarNombreServicioLibre(plan, base) {
+    const usados = new Set((plan.servicios || []).map(s => claveNombreServicio(s.nombre)));
+    if (!usados.has(claveNombreServicio(base))) return base;
+    let n = 2;
+    while (usados.has(claveNombreServicio(`${base} ${n}`))) n++;
+    return `${base} ${n}`;
+}
+
 /** Renderiza el formulario de ajustes de la promoción: planes, servicios, reglas y pernoctas. */
 function renderAdminAjustes() {
   const container = document.getElementById('admin-config-container');
   let html = ``;
 
   if (!promoConfig.planes) promoConfig.planes = [];
+
+  // D-04: se recalcula en cada repintado, así que el aviso siempre refleja el
+  // estado real de promoConfig sin necesidad de guardar una bandera aparte.
+  const conflictosNombre = getConflictosNombreServicio();
+  const svcEnConflicto = (pIdx, i) => conflictosNombre.some(c => c.pIdx === pIdx && c.indices.includes(i));
 
   // ── Configuración general del contenedor (solo admin) ──
   html += `
@@ -3294,10 +3364,11 @@ function renderAdminAjustes() {
         html += `
         <div class="cfg-card" id="cfg-card-${pIdx}-${i}" style="border-left: 4px solid ${svc.color || 'var(--dark)'};">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; border-bottom:1px solid #e2e8f0; padding-bottom:10px;">
-             <input type="text" id="cfg-nom-${pIdx}-${i}" value="${svc.nombre}" style="margin:0; font-size:1.1rem; font-weight:bold; border:none; background:transparent; max-width:200px;">
+             <input type="text" id="cfg-nom-${pIdx}-${i}" value="${escapeHtml(svc.nombre)}" class="cfg-nom-input${svcEnConflicto(pIdx, i) ? ' cfg-nom-dup' : ''}">
              <button class="danger icon-btn" onclick="adminRemoveService(${pIdx}, ${i})">Borrar Servicio 🗑️</button>
           </div>
-          
+          ${svcEnConflicto(pIdx, i) ? `<p class="cfg-nom-aviso">⚠️ Este nombre está repetido (o vacío) dentro de ${escapeHtml(plan.nombre)}. Todo se busca por nombre, así que solo el primero sería alcanzable: cámbialo antes de guardar.</p>` : ''}
+
           <div style="display:flex; gap:15px; flex-wrap:wrap; margin-bottom:15px;">
              <div style="flex:1; min-width:120px;">
                 <label style="font-size:0.8rem; color:#64748b; display:block; margin-bottom:4px;">Cupo total/mes</label>
@@ -3468,8 +3539,8 @@ function adminRemovePlan(pIdx) {
 /** Añade un servicio con valores por defecto al plan indicado y re-renderiza ajustes. */
 function adminAddService(pIdx) {
   syncConfigFromUI();
-  promoConfig.planes[pIdx].servicios.push({ 
-      nombre: "Nuevo Servicio", cupoMensualTotal: 1, plazasPorDia: 1, color: "#94a3b8", 
+  promoConfig.planes[pIdx].servicios.push({
+      nombre: generarNombreServicioLibre(promoConfig.planes[pIdx], "Nuevo Servicio"), cupoMensualTotal: 1, plazasPorDia: 1, color: "#94a3b8",
       requiereHabilitacion: false, 
       dadasPorSecretaria: false,
       subastaTrigger: [],
@@ -3537,8 +3608,10 @@ function syncConfigFromUI() {
     // 2. Recorremos los servicios que pertenecen a este plan concreto
     if (!plan.servicios) plan.servicios = [];
     plan.servicios.forEach((svc, i) => {
+      // D-04: se recorta al leer. Un `Pediatría ` con espacio final es
+      // indistinguible a la vista y no vuelve a resolver a ningún servicio.
       const nomSvc = document.getElementById(`cfg-nom-${pIdx}-${i}`);
-      if (nomSvc) svc.nombre = nomSvc.value;
+      if (nomSvc) svc.nombre = nomSvc.value.trim();
 
       const cupoSvc = document.getElementById(`cfg-cupo-${pIdx}-${i}`);
       if (cupoSvc) svc.cupoMensualTotal = parseInt(cupoSvc.value) || 0;
@@ -3684,6 +3757,23 @@ function exportarReglasTexto() {
 /** Sincroniza promoConfig desde la UI y lo persiste en Supabase (tabla promociones). */
 async function adminSaveConfig() {
   syncConfigFromUI();
+
+  // D-04: la puerta está aquí y no en cada tecleo. Un duplicado a medio escribir
+  // es normal mientras se edita; lo que no puede pasar es que se PERSISTA, porque
+  // a partir de ahí el segundo servicio homónimo queda inalcanzable para todos
+  // los lookups por nombre y sus guardias no encuentran configuración.
+  const conflictos = getConflictosNombreServicio();
+  if (conflictos.length > 0) {
+      renderAdminAjustes();
+      const detalle = conflictos.map(c => c.tipo === 'vacio'
+          ? `• Plan "${c.plan}": ${c.indices.length} servicio(s) sin nombre.`
+          : `• Plan "${c.plan}": "${c.nombre}" está repetido ${c.indices.length} veces.`
+      ).join('\n');
+      setStatus('Sin guardar ⚠️', true);
+      alert(`⚠️ No se ha guardado nada.\n\nDentro de un mismo plan, cada servicio necesita un nombre propio y no vacío:\n\n${detalle}\n\nSe comparan ignorando mayúsculas y espacios sobrantes. El mismo nombre en planes distintos sí es válido.`);
+      return;
+  }
+
   setStatus('Guardando ajustes...');
   try {
       const { error } = await supabaseClient.from('promociones').update({ configuracion: promoConfig }).eq('id', currentUserProfile.promocion_id);
