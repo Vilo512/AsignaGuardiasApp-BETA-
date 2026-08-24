@@ -3355,14 +3355,15 @@ function getConflictosNombrePlan() {
  * @returns {string}
  */
 function mensajeConflictoNombre(c) {
-    // "Se comparan ignorando..." no es relleno: dos nombres que chocan pueden ser
-    // indistinguibles en pantalla (mayúsculas aparte, un espacio doble o una tilde
-    // compuesta), y sin esta frase el admin no entiende por qué se le marca.
-    const criterio = ' Se comparan ignorando mayúsculas y espacios sobrantes.';
-    if (c.tipo === 'vacio') return '⚠️ Este servicio necesita un nombre.';
-    if (c.tipo === 'plan-vacio') return '⚠️ El plan necesita un nombre. Sin él, los residentes que lo tengan asignado se quedan sin servicios ni cupos.';
-    if (c.tipo === 'plan') return `⚠️ Ya hay otro plan llamado "${c.nombre}". Los residentes del segundo acabarían con los cupos y las reglas del primero: dale un nombre distinto.${criterio}`;
-    return `⚠️ Ya hay un "${c.nombre}" en este plan. Prueba con otro nombre: una variante como "${c.nombre} - Nivel 1" sí vale, otro "${c.nombre}" idéntico no.${criterio}`;
+    // Una línea y punto: esto se lee de reojo en un móvil, no se estudia. El
+    // porqué y el criterio de comparación ("ignorando mayúsculas y espacios")
+    // viven en el alert del guardado bloqueado, que es donde hay sitio.
+    // "dentro del mismo plan" sí se queda: sin esa coletilla el aviso
+    // contradiría a la app, que permite el mismo servicio en planes distintos.
+    if (c.tipo === 'vacio') return '⚠️ El servicio necesita un nombre.';
+    if (c.tipo === 'plan-vacio') return '⚠️ El plan necesita un nombre.';
+    if (c.tipo === 'plan') return '⚠️ No se permiten planes con nombres duplicados.';
+    return '⚠️ No se permiten servicios con nombres duplicados dentro del mismo plan.';
 }
 
 /**
@@ -3476,7 +3477,7 @@ function renderAdminAjustes() {
                 <button class="danger icon-btn" onclick="adminRemovePlan(${pIdx})">Borrar Plan</button>
             </div>
         </div>
-        <p class="cfg-nom-aviso" id="cfg-plan-aviso-${pIdx}" ${cPlan ? '' : 'hidden'}>${escapeHtml(mensajeConflictoNombre(cPlan || { tipo: 'plan', nombre: plan.nombre }))}</p>`;
+        <p class="cfg-nom-aviso" id="cfg-plan-aviso-${pIdx}" ${cPlan ? '' : 'hidden'}>${escapeHtml(mensajeConflictoNombre(cPlan || { tipo: 'plan' }))}</p>`;
     
     if (plan.servicios.length === 0) {
         html += `<p style="color:#64748b; font-size:0.85rem; font-style:italic; padding-bottom:10px;">No hay servicios en este plan.</p>`;
@@ -3489,7 +3490,7 @@ function renderAdminAjustes() {
              <input type="text" id="cfg-nom-${pIdx}-${i}" value="${escapeHtml(svc.nombre)}" class="cfg-nom-input${svcEnConflicto(pIdx, i) ? ' cfg-nom-dup' : ''}" onchange="revalidarNombresConfig()">
              <button class="danger icon-btn" onclick="adminRemoveService(${pIdx}, ${i})">Borrar Servicio 🗑️</button>
           </div>
-          <p class="cfg-nom-aviso" id="cfg-nom-aviso-${pIdx}-${i}" ${svcEnConflicto(pIdx, i) ? '' : 'hidden'}>${escapeHtml(mensajeConflictoNombre(conflictoDe(pIdx, i) || { tipo: 'duplicado', nombre: svc.nombre }))}</p>
+          <p class="cfg-nom-aviso" id="cfg-nom-aviso-${pIdx}-${i}" ${svcEnConflicto(pIdx, i) ? '' : 'hidden'}>${escapeHtml(mensajeConflictoNombre(conflictoDe(pIdx, i) || { tipo: 'duplicado' }))}</p>
 
           <div style="display:flex; gap:15px; flex-wrap:wrap; margin-bottom:15px;">
              <div style="flex:1; min-width:120px;">
