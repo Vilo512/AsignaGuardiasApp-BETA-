@@ -150,9 +150,13 @@ Se propuso que el sistema añadiera automáticamente «(R1)», «(R2)»... al no
 
 ## 9. Tareas pendientes
 
-### Antes de fusionar
+### Fusionado y validado en staging
 - [x] **Tercera pasada del `testing-lead`** sobre la validación en vivo. Encontró dos serios —el scroll del guardado bloqueado apuntando al campo equivocado y el nombre de plan vacío que se guardaba— corregidos en `6ff00fb`.
-- [ ] **Merge a `GestionGuardias-BETA`** — requiere confirmación explícita de rama. `main` no se toca.
+- [x] **Merge a `GestionGuardias-BETA`** (`e75dca7`) y desplegado en ggsbeta. `main` sigue en `d758f53`, sin tocar.
+- [x] **Validado en móvil real.** El auto-zoom de iOS ya no ocurre, los calendarios están correctos, y la legibilidad de badges y bottom sheets se confirma «espectacular» — que era el objetivo del Paso 5. Canario OK.
+- [x] Avisos de nombre duplicado acortados a una línea (`cf2e680`), a petición tras usarlos en el móvil.
+
+**Falsas alarmas de esa validación, por si reaparecen:** los contadores de plazas «no se ven» en móvil **por diseño** (Paso 3: no caben en la celda, se ven en el panel del día) y además solo salen con `plazasPorDia > 1`. Y la «ruleta» del selector de fecha es el date picker nativo de iOS; en escritorio y Android sale un desplegable, que es lo correcto.
 
 ### Verificado a medias (limitación del entorno, no descuido)
 - [ ] **El foco al escribir un nombre duplicado, en un móvil real.** Está comprobado que el nodo del input no se reemplaza, que es condición necesaria pero no suficiente. Falta ver qué pasa en iOS cuando el `change` llega con el blur: el `<p>` de aviso pasa de `hidden` a visible y **desplaza el contenido inferior**, así que el segundo toque podría caer en el sitio equivocado.
