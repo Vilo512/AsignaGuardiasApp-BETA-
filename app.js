@@ -3325,18 +3325,28 @@ function getConflictosNombreServicio() {
  * porque una promoción que ya arrastre el duplicado se quedaría sin poder
  * guardar nada hasta renombrar, y renombrar un plan tiene el mismo efecto
  * colateral que renombrar un servicio (D-07: la clave `svc@@plan`).
- * @returns {number[]} índices de plan en conflicto
+ * El nombre VACÍO es harina de otro costal y sí bloquea: no puede
+ * preexistir en ninguna config que funcione —los ~30 `find(p => p.nombre ===
+ * planName)` del código devolverían `undefined` para todos los residentes de
+ * ese plan, que perderían servicios, cupos y calendario— así que solo puede
+ * crearse en la sesión de edición actual y ahí es donde hay que atajarlo.
+ *
+ * @returns {Array<{tipo:'plan'|'plan-vacio', pIdx:number, nombre:string}>}
  */
 function getConflictosNombrePlan() {
     const porClave = new Map();
+    const conflictos = [];
     (promoConfig.planes || []).forEach((plan, pIdx) => {
-        const clave = claveNombreServicio((plan || {}).nombre);
+        const nombre = (plan || {}).nombre;
+        const clave = claveNombreServicio(nombre);
+        if (!clave) { conflictos.push({ tipo: 'plan-vacio', pIdx, nombre: '' }); return; }
         if (!porClave.has(clave)) porClave.set(clave, []);
-        porClave.get(clave).push(pIdx);
+        porClave.get(clave).push({ pIdx, nombre });
     });
-    const malos = [];
-    porClave.forEach(indices => { if (indices.length > 1) malos.push(...indices); });
-    return malos;
+    porClave.forEach(items => {
+        if (items.length > 1) items.forEach(it => conflictos.push({ tipo: 'plan', pIdx: it.pIdx, nombre: it.nombre }));
+    });
+    return conflictos;
 }
 
 /**
@@ -3345,9 +3355,14 @@ function getConflictosNombrePlan() {
  * @returns {string}
  */
 function mensajeConflictoNombre(c) {
+    // "Se comparan ignorando..." no es relleno: dos nombres que chocan pueden ser
+    // indistinguibles en pantalla (mayúsculas aparte, un espacio doble o una tilde
+    // compuesta), y sin esta frase el admin no entiende por qué se le marca.
+    const criterio = ' Se comparan ignorando mayúsculas y espacios sobrantes.';
     if (c.tipo === 'vacio') return '⚠️ Este servicio necesita un nombre.';
-    if (c.tipo === 'plan') return `⚠️ Ya hay otro plan llamado "${c.nombre}". Los residentes del segundo acabarían con los cupos y las reglas del primero: dale un nombre distinto.`;
-    return `⚠️ Ya hay un "${c.nombre}" en este plan. Prueba con otro nombre: una variante como "${c.nombre} - Nivel 1" sí vale, otro "${c.nombre}" idéntico no.`;
+    if (c.tipo === 'plan-vacio') return '⚠️ El plan necesita un nombre. Sin él, los residentes que lo tengan asignado se quedan sin servicios ni cupos.';
+    if (c.tipo === 'plan') return `⚠️ Ya hay otro plan llamado "${c.nombre}". Los residentes del segundo acabarían con los cupos y las reglas del primero: dale un nombre distinto.${criterio}`;
+    return `⚠️ Ya hay un "${c.nombre}" en este plan. Prueba con otro nombre: una variante como "${c.nombre} - Nivel 1" sí vale, otro "${c.nombre}" idéntico no.${criterio}`;
 }
 
 /**
@@ -3379,9 +3394,16 @@ function revalidarNombresConfig() {
         pintar(
             document.getElementById(`cfg-plan-nom-${pIdx}`),
             document.getElementById(`cfg-plan-aviso-${pIdx}`),
-            planesMalos.includes(pIdx) ? { tipo: 'plan', nombre: (plan || {}).nombre } : null
+            planesMalos.find(c => c.pIdx === pIdx) || null
         );
-        (plan.servicios || []).forEach((svc, i) => {
+        // El nombre del plan aparece además en la cabecera del acordeón y en el
+        // botón de añadir servicio. Como aquí NO se repinta, hay que refrescarlos
+        // a mano o se quedan diciendo el nombre viejo hasta el siguiente render.
+        const resumen = document.getElementById(`cfg-plan-summary-${pIdx}`);
+        if (resumen) resumen.textContent = `👉 Desplegar/Ocultar: ${(plan || {}).nombre || ''}`;
+        const btnAdd = document.getElementById(`cfg-plan-addsvc-${pIdx}`);
+        if (btnAdd) btnAdd.textContent = `+ Servicio al ${(plan || {}).nombre || ''}`;
+        ((plan || {}).servicios || []).forEach((svc, i) => {
             pintar(
                 document.getElementById(`cfg-nom-${pIdx}-${i}`),
                 document.getElementById(`cfg-nom-aviso-${pIdx}-${i}`),
@@ -3440,17 +3462,21 @@ function renderAdminAjustes() {
     // estado entre repintados, así que sin esto el aviso rojo que acabamos de
     // pintar quedaba dentro de un <details> cerrado — justo en el momento en
     // que hace falta verlo, al volver del alert de guardado fallido.
-    const planEnConflicto = conflictosNombre.some(c => c.pIdx === pIdx) || planesMalos.includes(pIdx);
+    const cPlan = planesMalos.find(c => c.pIdx === pIdx);
+    // Se abre solo por lo que BLOQUEA el guardado. Un nombre de plan duplicado
+    // es advertencia y puede convivir indefinidamente: abrir su acordeón en cada
+    // repintado dejaría dos planes enteros desplegados para siempre.
+    const planEnConflicto = conflictosNombre.some(c => c.pIdx === pIdx) || (cPlan && cPlan.tipo === 'plan-vacio');
     html += `
-    <details ${planEnConflicto ? 'open' : ''} style="background:#f1f5f9; border:2px solid #cbd5e1; border-radius:12px; padding:15px; margin-bottom:20px;"><summary style="font-weight:bold; cursor:pointer; font-size:1.1rem; color:var(--dark);">👉 Desplegar/Ocultar: ${escapeHtml(plan.nombre)}</summary><div style="margin-top: 15px;">
+    <details ${planEnConflicto ? 'open' : ''} style="background:#f1f5f9; border:2px solid #cbd5e1; border-radius:12px; padding:15px; margin-bottom:20px;"><summary id="cfg-plan-summary-${pIdx}" style="font-weight:bold; cursor:pointer; font-size:1.1rem; color:var(--dark);">👉 Desplegar/Ocultar: ${escapeHtml(plan.nombre)}</summary><div style="margin-top: 15px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; border-bottom:2px solid #94a3b8; padding-bottom:10px; flex-wrap:wrap; gap:10px;">
-            <input type="text" id="cfg-plan-nom-${pIdx}" value="${escapeHtml(plan.nombre)}" class="cfg-plan-nom-input${planesMalos.includes(pIdx) ? ' cfg-nom-dup' : ''}" onchange="revalidarNombresConfig()">
+            <input type="text" id="cfg-plan-nom-${pIdx}" value="${escapeHtml(plan.nombre)}" class="cfg-plan-nom-input${cPlan ? ' cfg-nom-dup' : ''}" onchange="revalidarNombresConfig()">
             <div style="display:flex; gap:8px;">
-                <button class="primary icon-btn" style="background:var(--adu);" onclick="adminAddService(${pIdx})">+ Servicio al ${escapeHtml(plan.nombre)}</button>
+                <button class="primary icon-btn" id="cfg-plan-addsvc-${pIdx}" style="background:var(--adu);" onclick="adminAddService(${pIdx})">+ Servicio al ${escapeHtml(plan.nombre)}</button>
                 <button class="danger icon-btn" onclick="adminRemovePlan(${pIdx})">Borrar Plan</button>
             </div>
         </div>
-        <p class="cfg-nom-aviso" id="cfg-plan-aviso-${pIdx}" ${planesMalos.includes(pIdx) ? '' : 'hidden'}>${escapeHtml(mensajeConflictoNombre({ tipo: 'plan', nombre: plan.nombre }))}</p>`;
+        <p class="cfg-nom-aviso" id="cfg-plan-aviso-${pIdx}" ${cPlan ? '' : 'hidden'}>${escapeHtml(mensajeConflictoNombre(cPlan || { tipo: 'plan', nombre: plan.nombre }))}</p>`;
     
     if (plan.servicios.length === 0) {
         html += `<p style="color:#64748b; font-size:0.85rem; font-style:italic; padding-bottom:10px;">No hay servicios en este plan.</p>`;
@@ -3873,19 +3899,29 @@ async function adminSaveConfig() {
   // es normal mientras se edita; lo que no puede pasar es que se PERSISTA, porque
   // a partir de ahí el segundo servicio homónimo queda inalcanzable para todos
   // los lookups por nombre y sus guardias no encuentran configuración.
-  const conflictos = getConflictosNombreServicio();
+  // Los nombres de plan DUPLICADOS solo avisan (D-08), pero un plan sin nombre sí
+  // bloquea: no puede preexistir en ninguna config que funcione, así que solo se
+  // crea aquí y aquí hay que pararlo.
+  const conflictos = [...getConflictosNombreServicio(), ...getConflictosNombrePlan().filter(c => c.tipo === 'plan-vacio')];
   if (conflictos.length > 0) {
       renderAdminAjustes();
       // El repintado deja abiertos los planes en conflicto; llevamos además la
       // vista al primer campo marcado, que con varios planes queda fuera de
       // pantalla y el admin no sabría dónde mirar tras cerrar el aviso.
-      document.querySelector('.cfg-nom-dup')?.scrollIntoView({ block: 'center' });
-      const detalle = conflictos.map(c => c.tipo === 'vacio'
-          ? `• Plan "${c.plan}": ${c.indices.length} servicio(s) sin nombre.`
-          : `• Plan "${c.plan}": "${c.nombre}" está repetido ${c.indices.length} veces.`
-      ).join('\n');
+      // Se prioriza el campo de SERVICIO: los nombres de plan comparten la clase
+      // .cfg-nom-dup y los duplicados NO bloquean, así que con `.cfg-nom-dup` a
+      // secas un plan duplicado —que puede quedarse ahí para siempre— secuestraba
+      // el scroll y llevaba a un campo rojo que no era el motivo del bloqueo.
+      const foco = document.querySelector('.cfg-nom-input.cfg-nom-dup')
+                || document.querySelector('.cfg-plan-nom-input.cfg-nom-dup');
+      foco?.scrollIntoView({ block: 'center' });
+      const detalle = conflictos.map(c => {
+          if (c.tipo === 'plan-vacio') return `• El plan en la posición ${c.pIdx + 1} no tiene nombre.`;
+          if (c.tipo === 'vacio') return `• Plan "${c.plan}": ${c.indices.length} servicio(s) sin nombre.`;
+          return `• Plan "${c.plan}": "${c.nombre}" está repetido ${c.indices.length} veces.`;
+      }).join('\n');
       setStatus('Sin guardar ⚠️', true);
-      alert(`⚠️ No se ha guardado nada.\n\nDentro de un mismo plan, cada servicio necesita un nombre propio y no vacío:\n\n${detalle}\n\nSe comparan ignorando mayúsculas y espacios sobrantes. El mismo nombre en planes distintos sí es válido.`);
+      alert(`⚠️ No se ha guardado nada.\n\nCada plan necesita nombre, y dentro de cada plan cada servicio necesita un nombre propio y no vacío:\n\n${detalle}\n\nSe comparan ignorando mayúsculas y espacios sobrantes. El mismo nombre de servicio en planes distintos sí es válido.`);
       return;
   }
 
