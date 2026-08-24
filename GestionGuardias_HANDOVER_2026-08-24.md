@@ -151,17 +151,24 @@ Se propuso que el sistema añadiera automáticamente «(R1)», «(R2)»... al no
 ## 9. Tareas pendientes
 
 ### Antes de fusionar
-- [ ] **Tercera pasada del `testing-lead`**, sobre `3000759..588c8d1` (la validación en vivo, lo único sin auditar).
+- [x] **Tercera pasada del `testing-lead`** sobre la validación en vivo. Encontró dos serios —el scroll del guardado bloqueado apuntando al campo equivocado y el nombre de plan vacío que se guardaba— corregidos en `6ff00fb`.
 - [ ] **Merge a `GestionGuardias-BETA`** — requiere confirmación explícita de rama. `main` no se toca.
+
+### Verificado a medias (limitación del entorno, no descuido)
+- [ ] **El foco al escribir un nombre duplicado, en un móvil real.** Está comprobado que el nodo del input no se reemplaza, que es condición necesaria pero no suficiente. Falta ver qué pasa en iOS cuando el `change` llega con el blur: el `<p>` de aviso pasa de `hidden` a visible y **desplaza el contenido inferior**, así que el segundo toque podría caer en el sitio equivocado.
+- [ ] **WebKit / iOS Safari** en general. Todo el trabajo se validó en Chromium.
 
 ### Rediseño
 - [ ] **Paso 6 — resto de vistas**, una por PR: rotación, grupos, perfil, ayuda, admin. Volumen medido en julio: ~88 textos grises y ~46 fondos claros inline. El panel de admin es el más cargado.
 - [ ] **Paso 7 — PWA**: `manifest.json`, iconos, `theme-color`, metas `apple-mobile-web-app-*`. Instalable, **sin offline**.
 
-### Limpieza (arrastrada desde julio)
-- [ ] Borrar `_harness-calendario.html` (raíz, sin trackear) y la entrada `gg-harness` de `.claude/launch.json`.
-- [ ] Borrar las ramas ya fusionadas de la sesión de julio.
-- [ ] Sin trackear en la raíz: `fix_subasta.py`, `backups calendarios/`, `outputs/`. Decidir si van al repo o al `.gitignore`.
+### Limpieza — hecha
+- [x] `.gitignore` (no había ninguno): fuera los worktrees de agentes, los ajustes locales, los Excel con guardias reales y el harness.
+- [x] Borradas las 15 ramas ya fusionadas y el worktree de agente huérfano. **`fix/horas-W5` se conserva**: tiene un commit sin fusionar (ver arriba).
+- [x] Borrado `outputs/GestionGuardias_PRD.md`, una copia en v1.2 de junio que convivía con el PRD vivo.
+- [x] Borrado `fix_subasta.py`. Contenía dos parches al motor de subasta: uno sigue aplicado, y el otro se revirtió a propósito porque atascaba el mes en subasta con 0 guardias que repartir — el porqué está en `app.js:6690`. El script seguía presentándolo como pendiente.
+- [x] Consolidadas las definiciones de agentes: entra `.claude/agents/` y `.claude/launch.json`, sale `agentes_prompts/` (versión de mayo que ya no gobernaba nada y describía tres expertos inexistentes).
+- **Se conserva la entrada `gg-harness`** del launch.json, en contra de lo que proponía el handover de julio: es el servidor con el que se ha medido y verificado todo esto.
 
 ---
 
