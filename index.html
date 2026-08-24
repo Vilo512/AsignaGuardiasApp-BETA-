@@ -83,7 +83,7 @@
         <div class="cal-header-center">
           <h3 id="main-cal-title" class="cal-title">Mes Año</h3>
           <span class="cal-subtitle">CALENDARIO ORIGINAL (RRHH)</span><br>
-          <button id="btn-filter" class="cal-filter-btn" onclick="toggleFilter()">👁️ Ver solo mis guardias</button>
+          <button id="btn-filter" class="cal-filter-btn" aria-pressed="false" onclick="toggleFilter()">👁️ Ver solo mis guardias</button>
         </div>
         <button onclick="changeMonth(1)">Sig ▶</button>
       </div>
@@ -100,13 +100,13 @@
   </div>
 
   <div id="pane-merc" style="display:none;">
-    <div class="card" style="border: 2px solid var(--merc);">
+    <div class="card merc-card">
       <div class="cal-header-nav">
         <button onclick="changeMonth(-1)">◀ Ant</button>
-        <div style="text-align: center;">
-          <h3 id="merc-cal-title" style="margin:0; font-size:1.1rem; color:var(--merc);">Mes Año</h3>
-          <span style="font-size:0.75rem; color:var(--merc); font-weight:bold;">MERCADILLO EN VIVO</span><br>
-          <button id="btn-filter-merc" onclick="toggleFilter()" style="margin-top:4px; padding:2px 10px; font-size:0.75rem; border-radius:12px; border:1px solid var(--merc); background:transparent; color:var(--merc);">👁️ Ver solo mis guardias</button>
+        <div class="cal-header-center">
+          <h3 id="merc-cal-title" class="cal-title cal-title--merc">Mes Año</h3>
+          <span class="cal-subtitle cal-subtitle--merc">MERCADILLO EN VIVO</span><br>
+          <button id="btn-filter-merc" class="cal-filter-btn cal-filter-btn--merc" aria-pressed="false" onclick="toggleFilter()">👁️ Ver solo mis guardias</button>
         </div>
         <button onclick="changeMonth(1)">Sig ▶</button>
       </div>
@@ -118,16 +118,16 @@
     </div>
 
     <div id="merc-logged-zone" style="display:none;">
-      <div class="card" style="background:#f8fafc; border:1px solid #cbd5e1;">
-        <h3 style="margin-bottom:0.5rem; color:var(--adu);">📥 Mi Buzón de Cambios/Ventas</h3>
+      <div class="card">
+        <h3 class="merc-zone__title merc-zone__title--inbox">📥 Mi Buzón de Cambios/Ventas</h3>
         <div id="merc-inbox"></div>
       </div>
       <div class="card">
-        <h3 style="margin-bottom:0.5rem;">📜 Log Público de Mercadillo</h3>
+        <h3 class="merc-zone__title">📜 Log Público de Mercadillo</h3>
         <div id="merc-log"></div>
       </div>
     </div>
-    <div id="merc-unlogged-zone" class="card" style="text-align:center; background:#fef9c3; color:#854d0e;">
+    <div id="merc-unlogged-zone" class="card merc-unlogged">
       ⚠️ Identifícate para operar en el mercadillo.
     </div>
   </div>

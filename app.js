@@ -2304,16 +2304,17 @@ function renderAll() {
 function toggleFilter() {
   if (!loggedInUser) { alert("⚠️ Identifícate primero arriba a la derecha para poder filtrar tus guardias."); return; }
   showOnlyMine = !showOnlyMine;
-  const btnMain = document.getElementById('btn-filter'); const btnMerc = document.getElementById('btn-filter-merc');
-  // 🎨 Rediseño Paso 2: el botón del calendario usa clase (.cal-filter-btn.active),
-  // no estilos inline. El del mercadillo sigue inline hasta el Paso 5.
-  if (showOnlyMine) {
-    if(btnMain) { btnMain.classList.add('active'); btnMain.innerHTML = '👁️ Viendo SOLO las mías'; }
-    if(btnMerc) { btnMerc.style.background = 'var(--merc)'; btnMerc.style.color = 'white'; btnMerc.innerHTML = '👁️ Viendo SOLO las mías'; }
-  } else {
-    if(btnMain) { btnMain.classList.remove('active'); btnMain.innerHTML = '👁️ Ver solo mis guardias'; }
-    if(btnMerc) { btnMerc.style.background = 'transparent'; btnMerc.style.color = 'var(--merc)'; btnMerc.innerHTML = '👁️ Ver solo mis guardias'; }
-  }
+  // 🎨 Rediseño Paso 2 (calendario) y Paso 5 (mercadillo): ambos botones son
+  // .cal-filter-btn y alternan con la clase .active. Sin estilos inline: el acento
+  // morado del mercadillo lo aporta el modificador .cal-filter-btn--merc.
+  const label = showOnlyMine ? '👁️ Viendo SOLO las mías' : '👁️ Ver solo mis guardias';
+  ['btn-filter', 'btn-filter-merc'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.classList.toggle('active', showOnlyMine);
+    btn.setAttribute('aria-pressed', showOnlyMine ? 'true' : 'false');
+    btn.innerHTML = label;
+  });
   checkAutomaticGraduation();
     renderAll();
 }
@@ -2721,7 +2722,7 @@ function renderMainCalendar() {
             dayShifts[u] === svc.nombre && esTitularVisibleEnPlan(u, svc.nombre, planVistaCtx));
         if (showOnlyMine && (simulatedViewUser || loggedInUser)) assigned = assigned.filter(u => u === (simulatedViewUser ?? loggedInUser));
         assigned.forEach(u => {
-            badgesHtml += `<div class="shift-badge" style="background:${svc.color}; color:${contrastText(svc.color)};">${icon('user')}${getInitials(u)}</div>`;
+            badgesHtml += `<div class="shift-badge" style="background:${svc.color}; color:${contrastText(svc.color)};">${icon('user')}${escapeHtml(getInitials(u))}</div>`;
         });
         // 🧭 B7: plan explícito — los objetos de getAllUniqueServices pertenecen por
         // identidad al primer plan con ese nombre, no necesariamente al visualizado
@@ -2849,7 +2850,7 @@ holders.forEach(h => {
         </div>`;
     if (esGestorModal) {
         html += `<label style="font-size:0.75rem; color:var(--text-2); display:block; margin-bottom:2px;">Regimen de Guardia:</label>
-        <select onchange="updateShiftMode('${dateKey}', '${h}', this.value)" style="margin:0; padding:4px; font-size:0.8rem; width:100%;">
+        <select class="sheet-select" onchange="updateShiftMode('${dateKey}', '${h}', this.value)" style="margin:0; padding:4px; width:100%;">
             <option value="normal" ${currentMode === 'normal' ? 'selected' : ''}>Guardia Normal</option>
             <option value="partida_primera" ${currentMode === 'partida_primera' ? 'selected' : ''}>Partida Diurna (50% H / Sin Saliente)</option>
             <option value="partida_segunda" ${currentMode === 'partida_segunda' ? 'selected' : ''}>Partida Nocturna (50% H / Con Saliente)</option>
@@ -2861,7 +2862,7 @@ holders.forEach(h => {
 	}); // ⚠️ ESTE CIERRE ES EL QUE HABÍAS BORRADO
         if (esGestorModal) {
             // Solo residentes del plan visualizado, activos este mes (B4)
-            html += `<div style="display:flex; gap:4px; margin-top:12px; border-top:1px solid #e2e8f0; padding-top:8px;"><select id="force-sel-${svcIdx}" style="margin:0; padding:4px; font-size:0.8rem;"><option value="">Añadir Residente...</option>${candidatosForce.map(r => `<option value="${r}">${r}</option>`).join('')}</select><button class="primary" style="background:var(--dark); color:white;" onclick="adminForceAssign('${dateKey}', '${svc.nombre}', ${y}, ${m}, ${d}, 'force-sel-${svcIdx}')">Poner</button></div>`;
+            html += `<div style="display:flex; gap:4px; margin-top:12px; border-top:1px solid #e2e8f0; padding-top:8px;"><select id="force-sel-${svcIdx}" class="sheet-select" style="margin:0; padding:4px;"><option value="">Añadir Residente...</option>${candidatosForce.map(r => `<option value="${r}">${r}</option>`).join('')}</select><button class="primary" style="background:var(--dark); color:white;" onclick="adminForceAssign('${dateKey}', '${svc.nombre}', ${y}, ${m}, ${d}, 'force-sel-${svcIdx}')">Poner</button></div>`;
         }
     } else {
         const isMine = dayShifts[viewUser] === svc.nombre;
@@ -2899,7 +2900,7 @@ if (isMine) {
         </div>
         <div style="margin-top:4px;">
             <label style="font-size:0.75rem; color:var(--pac-d); display:block; margin-bottom:2px; font-weight:bold;">Ajustar Modalidad:</label>
-            <select ${simulatedViewUser !== null ? 'disabled' : `onchange="updateShiftMode('${dateKey}', '${viewUser}', this.value)"`} style="margin:0; padding:6px; font-size:0.8rem; width:100%;">
+            <select class="sheet-select" ${simulatedViewUser !== null ? 'disabled' : `onchange="updateShiftMode('${dateKey}', '${viewUser}', this.value)"`} style="margin:0; padding:6px; width:100%;">
                 <option value="normal" ${currentMode === 'normal' ? 'selected' : ''}>Guardia Normal</option>
                 <option value="partida_primera" ${currentMode === 'partida_primera' ? 'selected' : ''}>Partida Diurna (50% Horas / Sin Saliente)</option>
                 <option value="partida_segunda" ${currentMode === 'partida_segunda' ? 'selected' : ''}>Partida Nocturna (50% Horas / Con Saliente)</option>
@@ -3069,6 +3070,8 @@ function renderMercadoCalendar() {
   const y = curDate.getFullYear(), m = curDate.getMonth();
   const grid = document.getElementById('merc-cal-body'); grid.innerHTML = '';
   const computed = getComputedShifts();
+  const _hoy = new Date();
+  const hoyKey = formatDateKey(_hoy.getFullYear(), _hoy.getMonth(), _hoy.getDate());
   if (loggedInUser) { document.getElementById('merc-logged-zone').style.display = 'block'; document.getElementById('merc-unlogged-zone').style.display = 'none'; } 
   else { document.getElementById('merc-logged-zone').style.display = 'none'; document.getElementById('merc-unlogged-zone').style.display = 'block'; }
   for(let i=0; i<getFirstDayOffset(y,m); i++) grid.innerHTML += `<div class="cal-cell empty"></div>`;
@@ -3076,23 +3079,33 @@ function renderMercadoCalendar() {
   // 🧭 B1: mismo contexto de plan visualizado que el calendario principal
   const planVistaCtxMerc = getPlanVistaContext(y, m);
   const userLevelName = planVistaCtxMerc ? planVistaCtxMerc.planName : 'ALL';
+  // 🧭 Misma fuente de servicios que el calendario principal, y izada fuera del
+  // bucle igual que allí. Con promoConfig.servicios la rejilla se quedaba SIN
+  // badges en promociones de varios planes: adminSaveConfig lo machaca con los
+  // servicios del primer plan, así que al mirar otro plan la intersección con
+  // svcNames era vacía hasta recargar (normalizeConfig sí reconstruye la unión).
+  const todosLosServiciosMerc = getAllUniqueServices();
   for(let d=1; d<=getDaysInMonth(y,m); d++) {
     const dk = formatDateKey(y, m, d);
     const dayShifts = computed[dk] || {};
     const cell = document.createElement('div');
-    cell.className = `cal-cell ${state.festivos[dk]?'is-festivo':''}`;
+    cell.className = `cal-cell ${state.festivos[dk]?'is-festivo':''} ${dk === hoyKey ? 'is-today' : ''}`.trim();
     const bgStyle = getCellBackgroundStyle(dk, y, m, d, userLevelName);
     if (bgStyle) cell.setAttribute('style', bgStyle);
     let html = `<div class="day-number">${d}</div>`;
 
-    promoConfig.servicios.forEach(svc => {
+    todosLosServiciosMerc.forEach(svc => {
         if (planVistaCtxMerc && !planVistaCtxMerc.svcNames.includes(svc.nombre)) return;
         let assigned = Object.keys(dayShifts || {}).filter(u =>
             dayShifts[u] === svc.nombre && esTitularVisibleEnPlan(u, svc.nombre, planVistaCtxMerc));
         if (showOnlyMine && (simulatedViewUser || loggedInUser)) assigned = assigned.filter(u => u === (simulatedViewUser ?? loggedInUser));
         assigned.forEach(u => {
             let isVre = u.startsWith('VRE');
-            html += `<div class="shift-badge ${isVre ? 'bg-vre' : ''}" style="background:${isVre ? '#94a3b8' : svc.color};">👤 ${isVre ? 'VRE' : getInitials(u)}</div>`;
+            // 🎨 Paso 5 (§3.1): mismo badge que el calendario. El texto lo calcula
+            // contrastText() sobre el color REAL del fondo — para el VRE ese fondo es
+            // el #94a3b8 que impone .bg-vre con !important, no svc.color.
+            const bg = isVre ? '#94a3b8' : svc.color;
+            html += `<div class="shift-badge ${isVre ? 'bg-vre' : ''}" style="background:${bg}; color:${contrastText(bg)};">${icon('user')}${isVre ? 'VRE' : escapeHtml(getInitials(u))}</div>`;
         });
     });
     
@@ -3117,57 +3130,112 @@ function openMercadoModal(y, m, d, dk, dayShifts) {
   if (!loggedInUser) return alert("Debes identificarte para usar el Mercadillo.");
   let myShift = null; for (let u in dayShifts) { if (u === loggedInUser) myShift = dayShifts[u]; }
   const past = isPastDate(dk);
-  const modal = document.createElement('div'); modal.className = 'modal-overlay'; modal.id = 'mercado-modal';
-  let html = `<div class="modal"><h3 style="color:var(--merc); border-bottom:2px solid var(--merc); padding-bottom:5px; margin-bottom:1rem;">🛒 Mercadillo: ${d}/${m+1}/${y}</h3><div id="mercado-dynamic">`;
-  
+
+  // 🎨 Paso 5: mismo blindaje que el panel de día (Paso 3). Un doble-toque rápido en
+  // la celda creaba DOS overlays con id="mercado-modal"; como "Cancelar" resuelve por
+  // getElementById, borraba el primero del DOM y no el que se veía.
+  const _prevSheet = document.getElementById('mercado-modal');
+  if (_prevSheet) _prevSheet.remove();
+
+  const modal = document.createElement('div'); modal.className = 'modal-overlay sheet-overlay'; modal.id = 'mercado-modal';
+  let html = `<div class="modal sheet" role="dialog" aria-modal="true">
+    <div class="sheet__grip" aria-hidden="true"></div>
+    <h3 class="sheet__title sheet__title--merc">🛒 Mercadillo: ${d}/${m+1}/${y}</h3>
+    <div id="mercado-dynamic">`;
+
   if (myShift) {
     const sColor = getServiceColor(myShift);
-    html += `<div style="background:#f1f5f9; padding:10px; border-radius:8px; margin-bottom:1rem;"><strong>Tienes guardia de:</strong> <span class="shift-badge" style="background:${sColor}; display:inline-block; margin-left:8px; padding: 4px 8px;">${myShift}</span></div>`;
-    
-    if (past) html += `<p style="color:#64748b; font-size:0.85rem; font-weight:bold; text-align:center;">Esta guardia ya se ha realizado en el mundo real.</p>`;
-    else html += `<button class="primary" style="width:100%; margin-bottom:10px;" onclick="renderMercadoVender('${dk}','${myShift}')">💵 Vender guardia</button><button class="merc" style="width:100%;" onclick="renderMercadoCambiar('${dk}','${myShift}')">🔄 Cambiar por otra fecha / residente</button>`;
+    html += `<div class="merc-mine"><strong>Tienes guardia de:</strong> <span class="svc-chip" style="background:${sColor}; color:${contrastText(sColor)};">${escapeHtml(myShift)}</span></div>`;
+
+    if (past) html += `<p class="merc-note merc-note--center">Esta guardia ya se ha realizado en el mundo real.</p>`;
+    else html += `<button class="primary merc-btn-block" data-act="vender" data-dk="${escapeHtml(dk)}" data-svc="${escapeHtml(myShift)}">💵 Vender guardia</button><button class="merc merc-btn-block" data-act="cambiar" data-dk="${escapeHtml(dk)}" data-svc="${escapeHtml(myShift)}">🔄 Cambiar por otra fecha / residente</button>`;
   } else {
-    let canBuy = false;
-    
+    // Contador real de filas pintadas: antes había un `canBuy` que nunca se ponía a
+    // true, así que el aviso de "no hay guardias" salía incluso listando compañeros.
+    let companeros = 0;
+
     // Bucle restaurado: Evaluamos a cada compañero que tiene guardia este día
     for (let u in dayShifts) {
 			if (u !== loggedInUser && !u.startsWith('VRE')) {
-            html += `<div style="display:flex; justify-content:space-between; align-items:center; border:1px solid #e2e8f0; padding:8px; border-radius:8px; margin-bottom:8px;">`;
-            html += `<div><span style="font-size:0.85rem; font-weight:bold;">${u}</span> <span class="shift-badge" style="background:${getServiceColor(dayShifts[u])}; margin-left:4px;">${dayShifts[u]}</span></div>`;
+            companeros++;
+            const cColor = getServiceColor(dayShifts[u]);
+            html += `<div class="merc-row">`;
+            html += `<div class="merc-row__who"><span class="merc-row__name">${escapeHtml(u)}</span> <span class="svc-chip" style="background:${cColor}; color:${contrastText(cColor)};">${escapeHtml(dayShifts[u])}</span></div>`;
 
             if (past) {
-                html += `<span style="font-size:0.75rem; color:#94a3b8; font-weight:bold;">Pasada</span>`;
+                html += `<span class="merc-tag">Pasada</span>`;
             } else {
                 // Inyección de la regla de intercambio temporal
                 let iCanTake = canUserTakeShift(loggedInUser, u, dk, dayShifts[u]);
                 if (iCanTake) {
-                    html += `<div style="display:flex; gap:4px;"><button class="merc icon-btn" onclick="executeBuyRequest('${dk}', '${dayShifts[u]}', '${u}')">Comprar</button><button class="primary icon-btn" style="background:var(--adu);" onclick="renderMercadoCambiarAjena('${dk}', '${dayShifts[u]}', '${u}')">Cambiar</button></div>`;
+                    const attrs = `data-dk="${escapeHtml(dk)}" data-svc="${escapeHtml(dayShifts[u])}" data-user="${escapeHtml(u)}"`;
+                    html += `<div class="merc-actions"><button class="merc" data-act="comprar" ${attrs}>Comprar</button><button class="primary" style="background:var(--adu-d); color:var(--bg);" data-act="cambiar-ajena" ${attrs}>Cambiar</button></div>`;
                 } else {
-                    html += `<span style="font-size:0.75rem; color:var(--fest); font-weight:bold; background:#fee2e2; padding:2px 6px; border-radius:4px;">Incompatible por R</span>`;
+                    html += `<span class="merc-warn">Incompatible por R</span>`;
                 }
             }
             html += `</div>`;
         }
     }
 
-    if(!canBuy) html += `<p style="font-size:0.85rem; color:#64748b; margin-bottom:1rem;">No hay guardias de compañeros disponibles en este día.</p>`;
-    
+    if(!companeros) html += `<p class="merc-note">No hay guardias de compañeros disponibles en este día.</p>`;
+
     if (!past) {
-        html += `<div style="margin-top:1rem; padding-top:1rem; border-top:1px dashed #cbd5e1;"><h4 style="margin-bottom:0.5rem; color:#64748b;">Comprar a Externo (Añadir guardia)</h4><div style="display:flex; gap:8px; flex-wrap:wrap;">`;
-        getAllUniqueServices().forEach(svc => { 
-            html += `<button class="primary" style="flex:1; background:${getServiceColor(svc.nombre)}; font-size:0.8rem;" onclick="executeBuyRequest('${dk}', '${svc.nombre}', 'Externo')">+ ${svc.nombre}</button>`; 
+        html += `<div class="merc-ext"><h4 class="merc-ext__title">Comprar a Externo (Añadir guardia)</h4><div class="merc-ext__grid">`;
+        getAllUniqueServices().forEach(svc => {
+            const eColor = getServiceColor(svc.nombre);
+            html += `<button class="primary" style="background:${eColor}; color:${contrastText(eColor)};" data-act="comprar-externo" data-dk="${escapeHtml(dk)}" data-svc="${escapeHtml(svc.nombre)}">+ ${escapeHtml(svc.nombre)}</button>`;
         });
         html += `</div></div>`;
     }
   }
-  html += `</div><div style="text-align:right; margin-top:1.5rem;"><button onclick="document.getElementById('mercado-modal').remove()">Cancelar</button></div></div>`;
-  modal.innerHTML = html; document.body.appendChild(modal);
+  html += `</div><div class="sheet__footer"><button class="sheet__close" data-act="close">Cancelar</button></div></div>`;
+  modal.innerHTML = html;
+  _bindMercadoActions(modal);
+  document.body.appendChild(modal);
+}
+
+/**
+ * Enlaza por DOM los controles `[data-act]` del modal del Mercadillo.
+ * Los nombres de servicio y de residente son texto libre del admin: interpolarlos
+ * dentro de un `onclick` rompe el atributo (un `UCI "Peque"` lo parte por la mitad),
+ * el mismo fallo que ya se corrigió en el selector de propuesta. Aquí el valor viaja
+ * por `data-*` escapado y se lee ya decodificado desde `dataset`.
+ * Se llama tras cada repintado de #mercado-dynamic.
+ * @param {HTMLElement} root - contenedor recién pintado
+ */
+function _bindMercadoActions(root) {
+  if (!root) return;
+  root.querySelectorAll('[data-act]').forEach(el => {
+    const act = el.dataset.act;
+    const dk = el.dataset.dk || '', svc = el.dataset.svc || '', user = el.dataset.user || '';
+    const evt = (act === 'load-cambio-targets') ? 'change' : 'click';
+    el.addEventListener(evt, () => {
+      switch (act) {
+        // closest() y no getElementById: inmune por construcción a que llegue a
+        // haber dos overlays con el mismo id, que es lo que hacía falta pulsar
+        // "Cerrar" dos veces en el panel de día antes del Paso 3.
+        case 'close': el.closest('.modal-overlay')?.remove(); break;
+        case 'vender': renderMercadoVender(dk, svc); break;
+        case 'cambiar': renderMercadoCambiar(dk, svc); break;
+        case 'comprar': executeBuyRequest(dk, svc, user); break;
+        case 'cambiar-ajena': renderMercadoCambiarAjena(dk, svc, user); break;
+        case 'comprar-externo': executeBuyRequest(dk, svc, 'Externo'); break;
+        case 'confirmar-venta': executeSellRequest(dk, svc); break;
+        case 'load-cambio-targets': loadCambioTargets(dk, svc); break;
+        case 'solicitar-cambio': proxySwapRequest(dk, svc, el.dataset.target || ''); break;
+        case 'enviar-cambio-ajena': executeSwapRequestAjena(dk, svc, user); break;
+      }
+    });
+  });
 }
 
 /** Reemplaza la zona dinámica del modal con el formulario de venta de guardia. */
 function renderMercadoVender(dk, svc) {
     const res = getAllResidents().filter(r => r !== loggedInUser && canUserTakeShift(r, loggedInUser, dk, svc));
-    document.getElementById('mercado-dynamic').innerHTML = `<h4 style="margin-bottom:1rem;">Vender guardia de ${svc}</h4><label style="font-size:0.85rem; color:#64748b;">¿A quién se la vendes?</label><select id="vender-to-user"><option value="">-- Selecciona --</option><option value="Externo">👽 Otro Residente (Externo)</option>${res.map(r => `<option value="${r}">${r}</option>`).join('')}</select><button class="primary" style="width:100%" onclick="executeSellRequest('${dk}', '${svc}')">Confirmar Venta</button>`; 
+    const cont = document.getElementById('mercado-dynamic');
+    cont.innerHTML = `<h4 class="merc-form__title">Vender guardia de ${escapeHtml(svc)}</h4><label class="merc-form__label">¿A quién se la vendes?</label><select id="vender-to-user"><option value="">-- Selecciona --</option><option value="Externo">👽 Otro Residente (Externo)</option>${res.map(r => `<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join('')}</select><button class="primary merc-btn-block" data-act="confirmar-venta" data-dk="${escapeHtml(dk)}" data-svc="${escapeHtml(svc)}">Confirmar Venta</button>`;
+    _bindMercadoActions(cont);
 }
 /** Crea y procesa un trade de tipo 'venta'; si es a Externo, se aprueba directamente. */
 function executeSellRequest(dk, svc) { const target = document.getElementById('vender-to-user').value; if (!target) return alert("Selecciona a quién vender."); const trade = { id: Date.now(), type: 'venta', requester: loggedInUser, target: target, d1: dk, s1: svc, timestamp: new Date().toLocaleString('es-ES') }; let conflicts = checkTradeConflicts(trade); if (conflicts.length > 0) { if (!confirm("⚠️ ATENCIÓN: Conflictos:\n\n" + conflicts.join("\n") + "\n\n¿Proponer de todos modos?")) return; } if (target === 'Externo') { trade.status = 'approved'; alert("Venta a externo realizada."); } else { trade.status = 'pending'; alert(`Solicitud enviada a ${target}.`); } if(!state.trades) state.trades = []; state.trades.push(trade); _notifyNewTrade(trade); saveState(); document.getElementById('mercado-modal').remove(); checkAutomaticGraduation();
@@ -3188,12 +3256,193 @@ function executeBuyRequest(dk, svc, targetUser) { if (targetUser !== 'Externo' &
 // Dependencias externas: promoConfig, supabaseClient, currentUserProfile
 // Helpers que usa: syncConfigFromUI, saveState, setStatus, renderAll, checkAutomaticGraduation, MONTHS
 // ============================================================
+/**
+ * Normaliza un nombre para compararlo. `Pediatría ` y `pediatría` son el mismo
+ * servicio para quien lo escribe y dos distintos para el código, y esa asimetría
+ * es justo la que deja guardias sin encontrar su configuración.
+ *
+ * `normalize('NFC')` no es adorno: `Pediatría` tecleada en Windows y la misma
+ * palabra pegada desde un documento de macOS son cadenas DISTINTAS —una lleva la
+ * tilde como carácter combinante— y en pantalla son idénticas carácter por
+ * carácter. Sin esto, dos servicios visualmente iguales pasaban la validación y
+ * el segundo quedaba inalcanzable para siempre. En una app en español, con
+ * Pediatría / Cirugía / Urgencias, no es un caso teórico.
+ *
+ * El colapso de espacios cubre el mismo problema por otra vía: espacio doble
+ * interno y espacio duro (` `), que `\s` sí captura.
+ *
+ * @param {string} nombre
+ * @returns {string} clave de comparación
+ */
+function claveNombreServicio(nombre) {
+    return String(nombre ?? '').normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/**
+ * D-04. Detecta nombres de servicio inválidos DENTRO de cada plan.
+ *
+ * El mismo nombre en planes DISTINTOS es legítimo y está en uso: es como se
+ * expresa "R1 y R2 hacen Pediatría con cupos distintos", y getAllUniqueServices()
+ * lo deduplica a propósito. Lo que rompe es repetirlo dentro del mismo plan:
+ * todo lookup se hace por nombre (getSvcConfig, isServiceEnabledOnDate,
+ * getServiceColor, el selector de propuesta) y todos devuelven SIEMPRE el
+ * primero, así que el segundo servicio existe en la configuración pero es
+ * inalcanzable — sus reglas, su cupo y su color no se aplican nunca.
+ *
+ * Un nombre vacío es igual de destructivo: state.shifts guarda el nombre como
+ * valor, y una cadena vacía no vuelve a resolver a ningún servicio.
+ *
+ * @returns {Array<{tipo:'duplicado'|'vacio', plan:string, pIdx:number, nombre:string, indices:number[]}>}
+ */
+function getConflictosNombreServicio() {
+    const conflictos = [];
+    (promoConfig.planes || []).forEach((plan, pIdx) => {
+        const porClave = new Map();
+        const vacios = [];
+        (plan.servicios || []).forEach((svc, i) => {
+            const clave = claveNombreServicio((svc || {}).nombre);
+            if (!clave) { vacios.push(i); return; }
+            if (!porClave.has(clave)) porClave.set(clave, []);
+            porClave.get(clave).push(i);
+        });
+        if (vacios.length) conflictos.push({ tipo: 'vacio', plan: plan.nombre, pIdx, nombre: '', indices: vacios });
+        porClave.forEach(indices => {
+            if (indices.length > 1) {
+                conflictos.push({ tipo: 'duplicado', plan: plan.nombre, pIdx, nombre: (plan.servicios[indices[0]] || {}).nombre, indices });
+            }
+        });
+    });
+    return conflictos;
+}
+
+/**
+ * D-08 (parcial). Índices de planes cuyo nombre choca con el de otro plan.
+ *
+ * Dos planes homónimos hacen que `getSvcConfig` y `getPlanVistaContext`, que
+ * resuelven el plan por nombre con `find`, devuelvan siempre el primero: los
+ * residentes del segundo cobrarían cupos, horas y reglas del otro plan sin que
+ * nada falle a la vista. Aquí solo se AVISA — no se bloquea el guardado —
+ * porque una promoción que ya arrastre el duplicado se quedaría sin poder
+ * guardar nada hasta renombrar, y renombrar un plan tiene el mismo efecto
+ * colateral que renombrar un servicio (D-07: la clave `svc@@plan`).
+ * El nombre VACÍO es harina de otro costal y sí bloquea: no puede
+ * preexistir en ninguna config que funcione —los ~30 `find(p => p.nombre ===
+ * planName)` del código devolverían `undefined` para todos los residentes de
+ * ese plan, que perderían servicios, cupos y calendario— así que solo puede
+ * crearse en la sesión de edición actual y ahí es donde hay que atajarlo.
+ *
+ * @returns {Array<{tipo:'plan'|'plan-vacio', pIdx:number, nombre:string}>}
+ */
+function getConflictosNombrePlan() {
+    const porClave = new Map();
+    const conflictos = [];
+    (promoConfig.planes || []).forEach((plan, pIdx) => {
+        const nombre = (plan || {}).nombre;
+        const clave = claveNombreServicio(nombre);
+        if (!clave) { conflictos.push({ tipo: 'plan-vacio', pIdx, nombre: '' }); return; }
+        if (!porClave.has(clave)) porClave.set(clave, []);
+        porClave.get(clave).push({ pIdx, nombre });
+    });
+    porClave.forEach(items => {
+        if (items.length > 1) items.forEach(it => conflictos.push({ tipo: 'plan', pIdx: it.pIdx, nombre: it.nombre }));
+    });
+    return conflictos;
+}
+
+/**
+ * Mensaje que ve el admin en el campo en conflicto.
+ * @param {{tipo:string, nombre:string}} c
+ * @returns {string}
+ */
+function mensajeConflictoNombre(c) {
+    // "Se comparan ignorando..." no es relleno: dos nombres que chocan pueden ser
+    // indistinguibles en pantalla (mayúsculas aparte, un espacio doble o una tilde
+    // compuesta), y sin esta frase el admin no entiende por qué se le marca.
+    const criterio = ' Se comparan ignorando mayúsculas y espacios sobrantes.';
+    if (c.tipo === 'vacio') return '⚠️ Este servicio necesita un nombre.';
+    if (c.tipo === 'plan-vacio') return '⚠️ El plan necesita un nombre. Sin él, los residentes que lo tengan asignado se quedan sin servicios ni cupos.';
+    if (c.tipo === 'plan') return `⚠️ Ya hay otro plan llamado "${c.nombre}". Los residentes del segundo acabarían con los cupos y las reglas del primero: dale un nombre distinto.${criterio}`;
+    return `⚠️ Ya hay un "${c.nombre}" en este plan. Prueba con otro nombre: una variante como "${c.nombre} - Nivel 1" sí vale, otro "${c.nombre}" idéntico no.${criterio}`;
+}
+
+/**
+ * Valida los nombres SIN repintar el formulario y actualiza el marcado in situ.
+ *
+ * Se dispara al terminar de escribir un nombre (`change`), que es cuando el
+ * admin espera el aviso: enterarse al pulsar Guardar, tres pantallas después,
+ * llega tarde. No se puede resolver con `renderAdminAjustes()` porque el
+ * repintado cierra los acordeones y roba el foco a media edición.
+ *
+ * Recorre TODOS los campos, no solo el editado: corregir un nombre resuelve el
+ * choque de su pareja, y esa otra caja también tiene que dejar de estar roja.
+ *
+ * Cubre servicios (D-04, además bloquean el guardado) y planes (D-08, solo
+ * avisan). Deliberadamente no repinta: `renderAdminAjustes()` cerraría los
+ * acordeones y sacaría el foco del campo que se está escribiendo.
+ */
+function revalidarNombresConfig() {
+    syncConfigFromUI();
+    const conflictos = getConflictosNombreServicio();
+    const planesMalos = getConflictosNombrePlan();
+    const pintar = (inp, aviso, conflicto) => {
+        if (!inp || !aviso) return;
+        inp.classList.toggle('cfg-nom-dup', !!conflicto);
+        aviso.hidden = !conflicto;
+        if (conflicto) aviso.textContent = mensajeConflictoNombre(conflicto);
+    };
+    (promoConfig.planes || []).forEach((plan, pIdx) => {
+        pintar(
+            document.getElementById(`cfg-plan-nom-${pIdx}`),
+            document.getElementById(`cfg-plan-aviso-${pIdx}`),
+            planesMalos.find(c => c.pIdx === pIdx) || null
+        );
+        // El nombre del plan aparece además en la cabecera del acordeón y en el
+        // botón de añadir servicio. Como aquí NO se repinta, hay que refrescarlos
+        // a mano o se quedan diciendo el nombre viejo hasta el siguiente render.
+        const resumen = document.getElementById(`cfg-plan-summary-${pIdx}`);
+        if (resumen) resumen.textContent = `👉 Desplegar/Ocultar: ${(plan || {}).nombre || ''}`;
+        const btnAdd = document.getElementById(`cfg-plan-addsvc-${pIdx}`);
+        if (btnAdd) btnAdd.textContent = `+ Servicio al ${(plan || {}).nombre || ''}`;
+        ((plan || {}).servicios || []).forEach((svc, i) => {
+            pintar(
+                document.getElementById(`cfg-nom-${pIdx}-${i}`),
+                document.getElementById(`cfg-nom-aviso-${pIdx}-${i}`),
+                conflictos.find(x => x.pIdx === pIdx && x.indices.includes(i)) || null
+            );
+        });
+    });
+}
+
+/**
+ * Devuelve un nombre libre dentro del plan a partir de una base ("Nuevo
+ * Servicio", "Nuevo Servicio 2"...). Evita que el camino más común —pulsar
+ * "+ Servicio" dos veces— cree ya un duplicado que luego bloquea el guardado.
+ * @param {object} plan
+ * @param {string} base
+ * @returns {string}
+ */
+function generarNombreServicioLibre(plan, base) {
+    const usados = new Set((plan.servicios || []).map(s => claveNombreServicio(s.nombre)));
+    if (!usados.has(claveNombreServicio(base))) return base;
+    let n = 2;
+    while (usados.has(claveNombreServicio(`${base} ${n}`))) n++;
+    return `${base} ${n}`;
+}
+
 /** Renderiza el formulario de ajustes de la promoción: planes, servicios, reglas y pernoctas. */
 function renderAdminAjustes() {
   const container = document.getElementById('admin-config-container');
   let html = ``;
 
   if (!promoConfig.planes) promoConfig.planes = [];
+
+  // D-04: se recalcula en cada repintado, así que el aviso siempre refleja el
+  // estado real de promoConfig sin necesidad de guardar una bandera aparte.
+  const conflictosNombre = getConflictosNombreServicio();
+  const conflictoDe = (pIdx, i) => conflictosNombre.find(c => c.pIdx === pIdx && c.indices.includes(i));
+  const svcEnConflicto = (pIdx, i) => !!conflictoDe(pIdx, i);
+  // D-08: los nombres de plan solo AVISAN, no bloquean el guardado (ver §18 del PRD).
+  const planesMalos = getConflictosNombrePlan();
 
   // ── Configuración general del contenedor (solo admin) ──
   html += `
@@ -3209,15 +3458,25 @@ function renderAdminAjustes() {
   </div>`;
 
   promoConfig.planes.forEach((plan, pIdx) => {
+    // D-04: un plan con conflicto se pinta ABIERTO. El acordeón no conserva
+    // estado entre repintados, así que sin esto el aviso rojo que acabamos de
+    // pintar quedaba dentro de un <details> cerrado — justo en el momento en
+    // que hace falta verlo, al volver del alert de guardado fallido.
+    const cPlan = planesMalos.find(c => c.pIdx === pIdx);
+    // Se abre solo por lo que BLOQUEA el guardado. Un nombre de plan duplicado
+    // es advertencia y puede convivir indefinidamente: abrir su acordeón en cada
+    // repintado dejaría dos planes enteros desplegados para siempre.
+    const planEnConflicto = conflictosNombre.some(c => c.pIdx === pIdx) || (cPlan && cPlan.tipo === 'plan-vacio');
     html += `
-    <details style="background:#f1f5f9; border:2px solid #cbd5e1; border-radius:12px; padding:15px; margin-bottom:20px;"><summary style="font-weight:bold; cursor:pointer; font-size:1.1rem; color:var(--dark);">👉 Desplegar/Ocultar: ${plan.nombre}</summary><div style="margin-top: 15px;">
+    <details ${planEnConflicto ? 'open' : ''} style="background:#f1f5f9; border:2px solid #cbd5e1; border-radius:12px; padding:15px; margin-bottom:20px;"><summary id="cfg-plan-summary-${pIdx}" style="font-weight:bold; cursor:pointer; font-size:1.1rem; color:var(--dark);">👉 Desplegar/Ocultar: ${escapeHtml(plan.nombre)}</summary><div style="margin-top: 15px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; border-bottom:2px solid #94a3b8; padding-bottom:10px; flex-wrap:wrap; gap:10px;">
-            <input type="text" id="cfg-plan-nom-${pIdx}" value="${plan.nombre}" style="margin:0; font-size:1.2rem; font-weight:bold; color:var(--dark); border:1px solid transparent; background:transparent; max-width:250px;">
+            <input type="text" id="cfg-plan-nom-${pIdx}" value="${escapeHtml(plan.nombre)}" class="cfg-plan-nom-input${cPlan ? ' cfg-nom-dup' : ''}" onchange="revalidarNombresConfig()">
             <div style="display:flex; gap:8px;">
-                <button class="primary icon-btn" style="background:var(--adu);" onclick="adminAddService(${pIdx})">+ Servicio al ${plan.nombre}</button>
+                <button class="primary icon-btn" id="cfg-plan-addsvc-${pIdx}" style="background:var(--adu);" onclick="adminAddService(${pIdx})">+ Servicio al ${escapeHtml(plan.nombre)}</button>
                 <button class="danger icon-btn" onclick="adminRemovePlan(${pIdx})">Borrar Plan</button>
             </div>
-        </div>`;
+        </div>
+        <p class="cfg-nom-aviso" id="cfg-plan-aviso-${pIdx}" ${cPlan ? '' : 'hidden'}>${escapeHtml(mensajeConflictoNombre(cPlan || { tipo: 'plan', nombre: plan.nombre }))}</p>`;
     
     if (plan.servicios.length === 0) {
         html += `<p style="color:#64748b; font-size:0.85rem; font-style:italic; padding-bottom:10px;">No hay servicios en este plan.</p>`;
@@ -3227,10 +3486,11 @@ function renderAdminAjustes() {
         html += `
         <div class="cfg-card" id="cfg-card-${pIdx}-${i}" style="border-left: 4px solid ${svc.color || 'var(--dark)'};">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; border-bottom:1px solid #e2e8f0; padding-bottom:10px;">
-             <input type="text" id="cfg-nom-${pIdx}-${i}" value="${svc.nombre}" style="margin:0; font-size:1.1rem; font-weight:bold; border:none; background:transparent; max-width:200px;">
+             <input type="text" id="cfg-nom-${pIdx}-${i}" value="${escapeHtml(svc.nombre)}" class="cfg-nom-input${svcEnConflicto(pIdx, i) ? ' cfg-nom-dup' : ''}" onchange="revalidarNombresConfig()">
              <button class="danger icon-btn" onclick="adminRemoveService(${pIdx}, ${i})">Borrar Servicio 🗑️</button>
           </div>
-          
+          <p class="cfg-nom-aviso" id="cfg-nom-aviso-${pIdx}-${i}" ${svcEnConflicto(pIdx, i) ? '' : 'hidden'}>${escapeHtml(mensajeConflictoNombre(conflictoDe(pIdx, i) || { tipo: 'duplicado', nombre: svc.nombre }))}</p>
+
           <div style="display:flex; gap:15px; flex-wrap:wrap; margin-bottom:15px;">
              <div style="flex:1; min-width:120px;">
                 <label style="font-size:0.8rem; color:#64748b; display:block; margin-bottom:4px;">Cupo total/mes</label>
@@ -3388,8 +3648,15 @@ function renderAdminAjustes() {
 /** Añade un nuevo plan vacío al final de promoConfig.planes y re-renderiza ajustes. */
 function adminAddPlan() {
     syncConfigFromUI();
-    let numPlanes = promoConfig.planes.length + 1;
-    promoConfig.planes.push({ id: 'plan-' + Date.now(), nombre: `Plan R${numPlanes}`, servicios: [] });
+    // `planes.length + 1` repetía nombre en cuanto se borraba un plan: con R1 y
+    // R2, borrar R1 y añadir otro volvía a calcular 1+1 y creaba un segundo
+    // "Plan R2". Dos planes homónimos hacen que getSvcConfig resuelva por nombre
+    // al primero, así que los residentes del segundo cobran cupos y horas del
+    // plan equivocado, sin error visible.
+    const usados = new Set(promoConfig.planes.map(p => claveNombreServicio(p.nombre)));
+    let n = promoConfig.planes.length + 1;
+    while (usados.has(claveNombreServicio(`Plan R${n}`))) n++;
+    promoConfig.planes.push({ id: 'plan-' + Date.now(), nombre: `Plan R${n}`, servicios: [] });
     renderAdminAjustes();
 }
 /** Elimina el plan en la posición pIdx y todos sus servicios tras confirmación. */
@@ -3401,8 +3668,8 @@ function adminRemovePlan(pIdx) {
 /** Añade un servicio con valores por defecto al plan indicado y re-renderiza ajustes. */
 function adminAddService(pIdx) {
   syncConfigFromUI();
-  promoConfig.planes[pIdx].servicios.push({ 
-      nombre: "Nuevo Servicio", cupoMensualTotal: 1, plazasPorDia: 1, color: "#94a3b8", 
+  promoConfig.planes[pIdx].servicios.push({
+      nombre: generarNombreServicioLibre(promoConfig.planes[pIdx], "Nuevo Servicio"), cupoMensualTotal: 1, plazasPorDia: 1, color: "#94a3b8",
       requiereHabilitacion: false, 
       dadasPorSecretaria: false,
       subastaTrigger: [],
@@ -3470,6 +3737,16 @@ function syncConfigFromUI() {
     // 2. Recorremos los servicios que pertenecen a este plan concreto
     if (!plan.servicios) plan.servicios = [];
     plan.servicios.forEach((svc, i) => {
+      // D-04: aquí NO se recorta. Recortar al leer parecía higiene inofensiva y
+      // era una migración silenciosa: una config que ya tuviera `PAC Balaguer `
+      // guardado se renombraba sola con solo tocar cualquier campo del panel, y
+      // state.shifts y state.habilitaciones —que guardan el nombre como valor y
+      // como parte de la clave `svc@@plan`— se quedaban apuntando al nombre
+      // viejo. Resultado: las guardias de ese servicio desaparecían del
+      // calendario y el servicio perdía todos sus días habilitados.
+      // El espacio sobrante se DETECTA en getConflictosNombreServicio (choca con
+      // su gemelo sin espacio) y lo corrige el admin a propósito, no la app a su
+      // espalda. Renombrar sigue dejando guardias huérfanas: ver D-07 en el PRD.
       const nomSvc = document.getElementById(`cfg-nom-${pIdx}-${i}`);
       if (nomSvc) svc.nombre = nomSvc.value;
 
@@ -3617,6 +3894,37 @@ function exportarReglasTexto() {
 /** Sincroniza promoConfig desde la UI y lo persiste en Supabase (tabla promociones). */
 async function adminSaveConfig() {
   syncConfigFromUI();
+
+  // D-04: la puerta está aquí y no en cada tecleo. Un duplicado a medio escribir
+  // es normal mientras se edita; lo que no puede pasar es que se PERSISTA, porque
+  // a partir de ahí el segundo servicio homónimo queda inalcanzable para todos
+  // los lookups por nombre y sus guardias no encuentran configuración.
+  // Los nombres de plan DUPLICADOS solo avisan (D-08), pero un plan sin nombre sí
+  // bloquea: no puede preexistir en ninguna config que funcione, así que solo se
+  // crea aquí y aquí hay que pararlo.
+  const conflictos = [...getConflictosNombreServicio(), ...getConflictosNombrePlan().filter(c => c.tipo === 'plan-vacio')];
+  if (conflictos.length > 0) {
+      renderAdminAjustes();
+      // El repintado deja abiertos los planes en conflicto; llevamos además la
+      // vista al primer campo marcado, que con varios planes queda fuera de
+      // pantalla y el admin no sabría dónde mirar tras cerrar el aviso.
+      // Se prioriza el campo de SERVICIO: los nombres de plan comparten la clase
+      // .cfg-nom-dup y los duplicados NO bloquean, así que con `.cfg-nom-dup` a
+      // secas un plan duplicado —que puede quedarse ahí para siempre— secuestraba
+      // el scroll y llevaba a un campo rojo que no era el motivo del bloqueo.
+      const foco = document.querySelector('.cfg-nom-input.cfg-nom-dup')
+                || document.querySelector('.cfg-plan-nom-input.cfg-nom-dup');
+      foco?.scrollIntoView({ block: 'center' });
+      const detalle = conflictos.map(c => {
+          if (c.tipo === 'plan-vacio') return `• El plan en la posición ${c.pIdx + 1} no tiene nombre.`;
+          if (c.tipo === 'vacio') return `• Plan "${c.plan}": ${c.indices.length} servicio(s) sin nombre.`;
+          return `• Plan "${c.plan}": "${c.nombre}" está repetido ${c.indices.length} veces.`;
+      }).join('\n');
+      setStatus('Sin guardar ⚠️', true);
+      alert(`⚠️ No se ha guardado nada.\n\nCada plan necesita nombre, y dentro de cada plan cada servicio necesita un nombre propio y no vacío:\n\n${detalle}\n\nSe comparan ignorando mayúsculas y espacios sobrantes. El mismo nombre de servicio en planes distintos sí es válido.`);
+      return;
+  }
+
   setStatus('Guardando ajustes...');
   try {
       const { error } = await supabaseClient.from('promociones').update({ configuracion: promoConfig }).eq('id', currentUserProfile.promocion_id);
@@ -4538,7 +4846,7 @@ async function adminDeletePromotion() { if (!confirm("⚠️ ¡ALERTA ROJA! ⚠�
 
 /** Actualiza el buzón de solicitudes entrantes y el historial de operaciones del Mercadillo. */
 function renderMercadoInboxAndLog() {
-  if (!loggedInUser) return; const inb = document.getElementById('merc-inbox'); const log = document.getElementById('merc-log'); let myInbox = (state.trades || []).filter(t => (t.status === 'pending' && t.target === loggedInUser) || (t.status === 'undo_pending' && t.undoRequester !== loggedInUser && (t.requester === loggedInUser || t.target === loggedInUser))); if (myInbox.length === 0) inb.innerHTML = `<span style="font-size:0.85rem; color:#94a3b8;">No tienes solicitudes pendientes.</span>`; else { inb.innerHTML = myInbox.map(t => { let desc = ""; if (t.status === 'undo_pending') desc = `⚠️ <b>${t.undoRequester}</b> quiere DESHACER la operación del ${t.timestamp}.`; else if (t.type === 'venta') desc = `💵 <b>${t.requester}</b> te quiere VENDER su guardia de ${t.s1} (${formatDK(t.d1)}).`; else if (t.type === 'compra') desc = `🛒 <b>${t.requester}</b> te quiere COMPRAR tu guardia de ${t.s1} (${formatDK(t.d1)}).`; else if (t.type === 'cambio') desc = `🔄 <b>${t.requester}</b> quiere CAMBIAR su ${t.s1} (${formatDK(t.d1)}) por tu ${t.s2} (${formatDK(t.d2)}).`; return `<div class="trade-row" style="border-left:3px solid var(--merc);"><div>${desc}</div><div style="display:flex; gap:8px;"><button class="primary" style="background:var(--ped); font-size:0.75rem;" onclick="processTrade(${t.id}, true)">✅ Aceptar</button><button class="danger" style="font-size:0.75rem;" onclick="processTrade(${t.id}, false)">❌ Rechazar</button></div></div>`; }).join(''); } let allLogs = (state.trades || []).filter(t => {
+  if (!loggedInUser) return; const inb = document.getElementById('merc-inbox'); const log = document.getElementById('merc-log'); let myInbox = (state.trades || []).filter(t => (t.status === 'pending' && t.target === loggedInUser) || (t.status === 'undo_pending' && t.undoRequester !== loggedInUser && (t.requester === loggedInUser || t.target === loggedInUser))); if (myInbox.length === 0) inb.innerHTML = `<span class="merc-note">No tienes solicitudes pendientes.</span>`; else { inb.innerHTML = myInbox.map(t => { let desc = ""; const _r = escapeHtml(t.requester), _u = escapeHtml(t.undoRequester), _s1 = escapeHtml(t.s1), _s2 = escapeHtml(t.s2), _ts = escapeHtml(t.timestamp); if (t.status === 'undo_pending') desc = `⚠️ <b>${_u}</b> quiere DESHACER la operación del ${_ts}.`; else if (t.type === 'venta') desc = `💵 <b>${_r}</b> te quiere VENDER su guardia de ${_s1} (${formatDK(t.d1)}).`; else if (t.type === 'compra') desc = `🛒 <b>${_r}</b> te quiere COMPRAR tu guardia de ${_s1} (${formatDK(t.d1)}).`; else if (t.type === 'cambio') desc = `🔄 <b>${_r}</b> quiere CAMBIAR su ${_s1} (${formatDK(t.d1)}) por tu ${_s2} (${formatDK(t.d2)}).`; return `<div class="trade-row trade-row--inbox"><div>${desc}</div><div class="trade-row__actions"><button class="primary trade-btn-ok" onclick="processTrade(${t.id}, true)">✅ Aceptar</button><button class="danger" onclick="processTrade(${t.id}, false)">❌ Rechazar</button></div></div>`; }).join(''); } let allLogs = (state.trades || []).filter(t => {
     if (!['approved', 'undone', 'undo_pending', 'pending'].includes(t.status)) return false;
     
     let dates = [t.d1];
@@ -4559,7 +4867,7 @@ function renderMercadoInboxAndLog() {
         if (maxDateObj.getMonth() !== curDate.getMonth() || maxDateObj.getFullYear() !== curDate.getFullYear()) return false;
     }
     return true;
-}); if (allLogs.length === 0) log.innerHTML = `<span style="font-size:0.85rem; color:#94a3b8;">El historial de mercado está vacío.</span>`; else { log.innerHTML = allLogs.slice().reverse().map(t => { let desc = ""; let isPending = t.status === 'pending'; if (t.type === 'venta') desc = isPending ? `⏳ <b>${t.requester}</b> quiere VENDER su ${t.s1} (${formatDK(t.d1)}) a <b>${t.target}</b>.` : `💵 <b>${t.requester}</b> vendió su ${t.s1} (${formatDK(t.d1)}) a <b>${t.target}</b>.`; else if (t.type === 'compra') desc = isPending ? `⏳ <b>${t.requester}</b> quiere COMPRAR ${t.s1} (${formatDK(t.d1)}) a <b>${t.target}</b>.` : `🛒 <b>${t.requester}</b> compró ${t.s1} (${formatDK(t.d1)}) de <b>${t.target}</b>.`; else if (t.type === 'cambio') desc = isPending ? `⏳ <b>${t.requester}</b> quiere CAMBIAR su ${t.s1} (${formatDK(t.d1)}) por la de <b>${t.target}</b> (${formatDK(t.d2)}).` : `🔄 <b>${t.requester}</b> cambió su ${t.s1} (${formatDK(t.d1)}) por la de <b>${t.target}</b> (${formatDK(t.d2)}).`; let actionBtn = ""; if (t.status === 'approved' && (t.requester === loggedInUser || t.target === loggedInUser)) actionBtn = `<button class="danger icon-btn" style="font-size:0.7rem; padding:2px 6px;" onclick="requestTradeUndo(${t.id})">Deshacer</button>`; else if (isPending && t.requester === loggedInUser) actionBtn = `<button class="danger icon-btn" style="font-size:0.7rem; padding:2px 6px;" onclick="cancelPendingTrade(${t.id})">Cancelar Solicitud</button>`; if (isAdmin || isDelegado) actionBtn += `<button class="danger icon-btn" style="font-size:0.7rem; padding:2px 6px; margin-left:4px;" onclick="adminForceBorrarTrade(${t.id})" title="Eliminar entrada y guardia del calendario">🗑 Borrar</button>`; let statusStyle = ""; let statusLabel = ""; if (t.status === 'undone') { statusStyle = "opacity:0.5; background:#f1f5f9;"; statusLabel = '<b style="color:var(--fest);">(DESHECHO)</b>'; } else if (t.status === 'undo_pending') { statusStyle = "border-left: 3px solid var(--pac);"; statusLabel = '<b style="color:var(--pac);">(DESHACER PENDIENTE)</b>'; } else if (t.status === 'pending') { statusStyle = "border-left: 3px solid #cbd5e1; background:#f8fafc;"; statusLabel = '<b style="color:#64748b;">(PENDIENTE)</b>'; } return `<div class="trade-row" style="${statusStyle}"><div style="display:flex; justify-content:space-between; align-items:flex-start;"><span>${desc} ${statusLabel}</span>${actionBtn}</div><span style="font-size:0.7rem; color:#94a3b8;">${t.timestamp}</span></div>`; }).join(''); }
+}); if (allLogs.length === 0) log.innerHTML = `<span class="merc-note">El historial de mercado está vacío.</span>`; else { log.innerHTML = allLogs.slice().reverse().map(t => { let desc = ""; let isPending = t.status === 'pending'; const _r = escapeHtml(t.requester), _t = escapeHtml(t.target), _s1 = escapeHtml(t.s1), _s2 = escapeHtml(t.s2); if (t.type === 'venta') desc = isPending ? `⏳ <b>${_r}</b> quiere VENDER su ${_s1} (${formatDK(t.d1)}) a <b>${_t}</b>.` : `💵 <b>${_r}</b> vendió su ${_s1} (${formatDK(t.d1)}) a <b>${_t}</b>.`; else if (t.type === 'compra') desc = isPending ? `⏳ <b>${_r}</b> quiere COMPRAR ${_s1} (${formatDK(t.d1)}) a <b>${_t}</b>.` : `🛒 <b>${_r}</b> compró ${_s1} (${formatDK(t.d1)}) de <b>${_t}</b>.`; else if (t.type === 'cambio') desc = isPending ? `⏳ <b>${_r}</b> quiere CAMBIAR su ${_s1} (${formatDK(t.d1)}) por la de <b>${_t}</b> (${formatDK(t.d2)}).` : `🔄 <b>${_r}</b> cambió su ${_s1} (${formatDK(t.d1)}) por la de <b>${_t}</b> (${formatDK(t.d2)}).`; let actionBtn = ""; if (t.status === 'approved' && (t.requester === loggedInUser || t.target === loggedInUser)) actionBtn = `<button class="danger" onclick="requestTradeUndo(${t.id})">Deshacer</button>`; else if (isPending && t.requester === loggedInUser) actionBtn = `<button class="danger" onclick="cancelPendingTrade(${t.id})">Cancelar Solicitud</button>`; if (isAdmin || isDelegado) actionBtn += `<button class="danger" onclick="adminForceBorrarTrade(${t.id})" title="Eliminar entrada y guardia del calendario">🗑 Borrar</button>`; let statusClass = ""; let statusLabel = ""; if (t.status === 'undone') { statusClass = " is-undone"; statusLabel = '<b class="trade-tag trade-tag--undone">(DESHECHO)</b>'; } else if (t.status === 'undo_pending') { statusClass = " is-undo-pending"; statusLabel = '<b class="trade-tag trade-tag--undo">(DESHACER PENDIENTE)</b>'; } else if (t.status === 'pending') { statusClass = " is-pending"; statusLabel = '<b class="trade-tag trade-tag--pending">(PENDIENTE)</b>'; } return `<div class="trade-row${statusClass}"><div class="trade-row__head"><span>${desc} ${statusLabel}</span><span class="trade-row__actions">${actionBtn}</span></div><span class="trade-row__ts">${escapeHtml(t.timestamp)}</span></div>`; }).join(''); }
 }
 /** Cancela una solicitud de trade pendiente enviada por el usuario. */
 async function cancelPendingTrade(id) { if (!confirm("¿Cancelar solicitud?")) return; state.trades = state.trades.filter(t => t.id !== id); await saveState(); checkAutomaticGraduation();
@@ -4609,13 +4917,13 @@ async function requestTradeUndo(id) { let t = state.trades.find(x => x.id === id
     renderAll(); }
 
 /** Muestra el formulario de cambio propio: elige la fecha destino para intercambiar la guardia del usuario. */
-function renderMercadoCambiar(dk, svc) { const container = document.getElementById('mercado-dynamic'); container.innerHTML = `<h4 style="margin-bottom:1rem;">Cambiar guardia de ${svc}</h4><label style="font-size:0.85rem; color:#64748b;">1. Elige la fecha objetivo:</label><input type="date" id="cambio-date" onchange="loadCambioTargets('${dk}', '${svc}')"><div id="cambio-targets-area" style="margin-top:1rem;"></div>`; }
+function renderMercadoCambiar(dk, svc) { const container = document.getElementById('mercado-dynamic'); container.innerHTML = `<h4 class="merc-form__title">Cambiar guardia de ${escapeHtml(svc)}</h4><label class="merc-form__label">1. Elige la fecha objetivo:</label><input type="date" id="cambio-date" data-act="load-cambio-targets" data-dk="${escapeHtml(dk)}" data-svc="${escapeHtml(svc)}"><div id="cambio-targets-area" class="merc-form__area"></div>`; _bindMercadoActions(container); }
 /** Carga el selector de contrapartes disponibles para la fecha destino elegida en el cambio propio. */
-function loadCambioTargets(myDk, mySvc) { const dateVal = document.getElementById('cambio-date').value; if (!dateVal) return; const [y, mStr, dStr] = dateVal.split('-'); const targetDk = `${y}_${mStr}_${dStr}`; if (isPastDate(targetDk)) { document.getElementById('cambio-targets-area').innerHTML = `<p style="color:var(--fest); font-size:0.85rem;">No puedes seleccionar una fecha del pasado para hacer un cambio.</p>`; return; } const computed = getComputedShifts(); const dayShifts = computed[targetDk] || {}; let html = `<label style="font-size:0.85rem; color:#64748b;">2. ¿Con quién la cambias?</label><select id="cambio-to-user"><option value="">-- Selecciona opción --</option>`; html += `<option value="Externo|">👽 Mover a este día (Otro Residente Externo)</option>`; for (let u in dayShifts) { if (u !== loggedInUser && !u.startsWith('VRE')) { if (canUserTakeShift(u, loggedInUser, myDk, mySvc) && canUserTakeShift(loggedInUser, u, targetDk, dayShifts[u])) { html += `<option value="${u}|${dayShifts[u]}">🔄 ${u} (Su ${dayShifts[u]})</option>`; } } } html += `</select><button class="merc" style="width:100%; margin-top:10px;" onclick="proxySwapRequest('${myDk}', '${mySvc}', '${targetDk}')">Solicitar Cambio</button>`; document.getElementById('cambio-targets-area').innerHTML = html; }
+function loadCambioTargets(myDk, mySvc) { const dateVal = document.getElementById('cambio-date').value; if (!dateVal) return; const [y, mStr, dStr] = dateVal.split('-'); const targetDk = `${y}_${mStr}_${dStr}`; const area = document.getElementById('cambio-targets-area'); if (isPastDate(targetDk)) { area.innerHTML = `<p class="merc-error">No puedes seleccionar una fecha del pasado para hacer un cambio.</p>`; return; } const computed = getComputedShifts(); const dayShifts = computed[targetDk] || {}; let html = `<label class="merc-form__label">2. ¿Con quién la cambias?</label><select id="cambio-to-user"><option value="">-- Selecciona opción --</option>`; html += `<option value="Externo|">👽 Mover a este día (Otro Residente Externo)</option>`; for (let u in dayShifts) { if (u !== loggedInUser && !u.startsWith('VRE')) { if (canUserTakeShift(u, loggedInUser, myDk, mySvc) && canUserTakeShift(loggedInUser, u, targetDk, dayShifts[u])) { html += `<option value="${escapeHtml(u + '|' + dayShifts[u])}">🔄 ${escapeHtml(u)} (Su ${escapeHtml(dayShifts[u])})</option>`; } } } html += `</select><button class="merc merc-btn-block" data-act="solicitar-cambio" data-dk="${escapeHtml(myDk)}" data-svc="${escapeHtml(mySvc)}" data-target="${escapeHtml(targetDk)}">Solicitar Cambio</button>`; area.innerHTML = html; _bindMercadoActions(area); }
 /** Lee el select de contrapartes y delega en executeSwapRequestDirect con los parámetros correctos. */
 function proxySwapRequest(myDk, mySvc, targetDk) { const val = document.getElementById('cambio-to-user').value; if (!val) return alert("Selecciona una opción de cambio."); const [targetUser, targetSvc] = val.split('|'); executeSwapRequestDirect(myDk, mySvc, targetDk, targetSvc, targetUser); }
 /** Muestra el formulario para proponer un cambio sobre la guardia de otro residente: elige tu guardia a ofrecer. */
-function renderMercadoCambiarAjena(targetDk, targetSvc, targetUser) { const container = document.getElementById('mercado-dynamic'); if (!canUserTakeShift(loggedInUser, targetUser, targetDk, targetSvc)) { container.innerHTML = `<p style="color:var(--fest); padding:10px; background:#fee2e2; border-radius:8px;">⚠️ Tu nivel actual no te permite asumir esta guardia de ${targetSvc}.</p>`; return; } const computed = getComputedShifts(); let myFutureShifts = []; for (let dk in computed) { if (!isPastDate(dk) && computed[dk][loggedInUser]) { if (canUserTakeShift(targetUser, loggedInUser, dk, computed[dk][loggedInUser])) { myFutureShifts.push({dk: dk, svc: computed[dk][loggedInUser]}); } } } let html = `<h4 style="margin-bottom:1rem; color:var(--adu);">Ofrecer cambio a ${targetUser}</h4><div style="background:#f8fafc; padding:8px; border-radius:8px; margin-bottom:1rem; font-size:0.85rem; border:1px solid #cbd5e1;">Te quedarías su: <b>${targetSvc} (${formatDK(targetDk)})</b></div>`; if (myFutureShifts.length === 0) { html += `<p style="font-size:0.85rem; color:var(--fest); font-weight:bold;">No tienes guardias futuras programadas para ofrecerle a cambio.</p>`; } else { html += `<label style="font-size:0.85rem; color:#64748b;">¿Qué guardia tuya le ofreces a cambio?</label><select id="cambio-ajena-sel"><option value="">-- Selecciona una de tus guardias --</option>${myFutureShifts.map(s => `<option value="${s.dk}|${s.svc}">${formatDK(s.dk)} - ${s.svc}</option>`).join('')}</select><button class="primary" style="width:100%; margin-top:10px; background:var(--adu);" onclick="executeSwapRequestAjena('${targetDk}', '${targetSvc}', '${targetUser}')">Enviar Propuesta de Cambio</button>`; } container.innerHTML = html; }
+function renderMercadoCambiarAjena(targetDk, targetSvc, targetUser) { const container = document.getElementById('mercado-dynamic'); if (!canUserTakeShift(loggedInUser, targetUser, targetDk, targetSvc)) { container.innerHTML = `<p class="merc-error merc-error--block">⚠️ Tu nivel actual no te permite asumir esta guardia de ${escapeHtml(targetSvc)}.</p>`; return; } const computed = getComputedShifts(); let myFutureShifts = []; for (let dk in computed) { if (!isPastDate(dk) && computed[dk][loggedInUser]) { if (canUserTakeShift(targetUser, loggedInUser, dk, computed[dk][loggedInUser])) { myFutureShifts.push({dk: dk, svc: computed[dk][loggedInUser]}); } } } let html = `<h4 class="merc-form__title merc-form__title--adu">Ofrecer cambio a ${escapeHtml(targetUser)}</h4><div class="merc-recap">Te quedarías su: <b>${escapeHtml(targetSvc)} (${formatDK(targetDk)})</b></div>`; if (myFutureShifts.length === 0) { html += `<p class="merc-error">No tienes guardias futuras programadas para ofrecerle a cambio.</p>`; } else { html += `<label class="merc-form__label">¿Qué guardia tuya le ofreces a cambio?</label><select id="cambio-ajena-sel"><option value="">-- Selecciona una de tus guardias --</option>${myFutureShifts.map(s => `<option value="${escapeHtml(s.dk + '|' + s.svc)}">${formatDK(s.dk)} - ${escapeHtml(s.svc)}</option>`).join('')}</select><button class="primary merc-btn-block" style="background:var(--adu-d); color:var(--bg);" data-act="enviar-cambio-ajena" data-dk="${escapeHtml(targetDk)}" data-svc="${escapeHtml(targetSvc)}" data-user="${escapeHtml(targetUser)}">Enviar Propuesta de Cambio</button>`; } container.innerHTML = html; _bindMercadoActions(container); }
 /** Lee el select de "mi guardia a ofrecer" y ejecuta el cambio con la guardia ajena. */
 function executeSwapRequestAjena(targetDk, targetSvc, targetUser) { const val = document.getElementById('cambio-ajena-sel').value; if(!val) return alert("Selecciona una guardia tuya para ofrecer."); const [myDk, mySvc] = val.split('|'); executeSwapRequestDirect(myDk, mySvc, targetDk, targetSvc, targetUser); }
 // ============================================================
