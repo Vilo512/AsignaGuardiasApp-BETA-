@@ -282,6 +282,9 @@
      es decorativo: sin él el input hereda --text (gris muy claro) del estilo
      global y el nombre queda ilegible sobre blanco. */
   .cfg-nom-input { margin: 0; max-width: 200px; font-size: 1.1rem; font-weight: bold; border: none; background: transparent; color: #1e293b; }
+  /* Nombre del plan (D-08). Mismos estilos que traía inline; sale a clase para
+     que .cfg-nom-dup —declarada después, misma especificidad— pueda ganarle. */
+  .cfg-plan-nom-input { margin: 0; max-width: 250px; font-size: 1.2rem; font-weight: bold; border: 1px solid transparent; background: transparent; color: #1e293b; }
   /* El padding se mantiene en 0.6rem: con 4px el campo marcado se encogía a
      ~31px, y es justo el que hay que tocar para arreglar el conflicto. */
   .cfg-nom-dup { background: #fef2f2; color: #991b1b; border: 1px solid #dc2626; border-radius: var(--r-sm); padding: 0.6rem; }

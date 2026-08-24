@@ -3316,6 +3316,82 @@ function getConflictosNombreServicio() {
 }
 
 /**
+ * D-08 (parcial). Índices de planes cuyo nombre choca con el de otro plan.
+ *
+ * Dos planes homónimos hacen que `getSvcConfig` y `getPlanVistaContext`, que
+ * resuelven el plan por nombre con `find`, devuelvan siempre el primero: los
+ * residentes del segundo cobrarían cupos, horas y reglas del otro plan sin que
+ * nada falle a la vista. Aquí solo se AVISA — no se bloquea el guardado —
+ * porque una promoción que ya arrastre el duplicado se quedaría sin poder
+ * guardar nada hasta renombrar, y renombrar un plan tiene el mismo efecto
+ * colateral que renombrar un servicio (D-07: la clave `svc@@plan`).
+ * @returns {number[]} índices de plan en conflicto
+ */
+function getConflictosNombrePlan() {
+    const porClave = new Map();
+    (promoConfig.planes || []).forEach((plan, pIdx) => {
+        const clave = claveNombreServicio((plan || {}).nombre);
+        if (!porClave.has(clave)) porClave.set(clave, []);
+        porClave.get(clave).push(pIdx);
+    });
+    const malos = [];
+    porClave.forEach(indices => { if (indices.length > 1) malos.push(...indices); });
+    return malos;
+}
+
+/**
+ * Mensaje que ve el admin en el campo en conflicto.
+ * @param {{tipo:string, nombre:string}} c
+ * @returns {string}
+ */
+function mensajeConflictoNombre(c) {
+    if (c.tipo === 'vacio') return '⚠️ Este servicio necesita un nombre.';
+    if (c.tipo === 'plan') return `⚠️ Ya hay otro plan llamado "${c.nombre}". Los residentes del segundo acabarían con los cupos y las reglas del primero: dale un nombre distinto.`;
+    return `⚠️ Ya hay un "${c.nombre}" en este plan. Prueba con otro nombre: una variante como "${c.nombre} - Nivel 1" sí vale, otro "${c.nombre}" idéntico no.`;
+}
+
+/**
+ * Valida los nombres SIN repintar el formulario y actualiza el marcado in situ.
+ *
+ * Se dispara al terminar de escribir un nombre (`change`), que es cuando el
+ * admin espera el aviso: enterarse al pulsar Guardar, tres pantallas después,
+ * llega tarde. No se puede resolver con `renderAdminAjustes()` porque el
+ * repintado cierra los acordeones y roba el foco a media edición.
+ *
+ * Recorre TODOS los campos, no solo el editado: corregir un nombre resuelve el
+ * choque de su pareja, y esa otra caja también tiene que dejar de estar roja.
+ *
+ * Cubre servicios (D-04, además bloquean el guardado) y planes (D-08, solo
+ * avisan). Deliberadamente no repinta: `renderAdminAjustes()` cerraría los
+ * acordeones y sacaría el foco del campo que se está escribiendo.
+ */
+function revalidarNombresConfig() {
+    syncConfigFromUI();
+    const conflictos = getConflictosNombreServicio();
+    const planesMalos = getConflictosNombrePlan();
+    const pintar = (inp, aviso, conflicto) => {
+        if (!inp || !aviso) return;
+        inp.classList.toggle('cfg-nom-dup', !!conflicto);
+        aviso.hidden = !conflicto;
+        if (conflicto) aviso.textContent = mensajeConflictoNombre(conflicto);
+    };
+    (promoConfig.planes || []).forEach((plan, pIdx) => {
+        pintar(
+            document.getElementById(`cfg-plan-nom-${pIdx}`),
+            document.getElementById(`cfg-plan-aviso-${pIdx}`),
+            planesMalos.includes(pIdx) ? { tipo: 'plan', nombre: (plan || {}).nombre } : null
+        );
+        (plan.servicios || []).forEach((svc, i) => {
+            pintar(
+                document.getElementById(`cfg-nom-${pIdx}-${i}`),
+                document.getElementById(`cfg-nom-aviso-${pIdx}-${i}`),
+                conflictos.find(x => x.pIdx === pIdx && x.indices.includes(i)) || null
+            );
+        });
+    });
+}
+
+/**
  * Devuelve un nombre libre dentro del plan a partir de una base ("Nuevo
  * Servicio", "Nuevo Servicio 2"...). Evita que el camino más común —pulsar
  * "+ Servicio" dos veces— cree ya un duplicado que luego bloquea el guardado.
@@ -3341,7 +3417,10 @@ function renderAdminAjustes() {
   // D-04: se recalcula en cada repintado, así que el aviso siempre refleja el
   // estado real de promoConfig sin necesidad de guardar una bandera aparte.
   const conflictosNombre = getConflictosNombreServicio();
-  const svcEnConflicto = (pIdx, i) => conflictosNombre.some(c => c.pIdx === pIdx && c.indices.includes(i));
+  const conflictoDe = (pIdx, i) => conflictosNombre.find(c => c.pIdx === pIdx && c.indices.includes(i));
+  const svcEnConflicto = (pIdx, i) => !!conflictoDe(pIdx, i);
+  // D-08: los nombres de plan solo AVISAN, no bloquean el guardado (ver §18 del PRD).
+  const planesMalos = getConflictosNombrePlan();
 
   // ── Configuración general del contenedor (solo admin) ──
   html += `
@@ -3361,16 +3440,17 @@ function renderAdminAjustes() {
     // estado entre repintados, así que sin esto el aviso rojo que acabamos de
     // pintar quedaba dentro de un <details> cerrado — justo en el momento en
     // que hace falta verlo, al volver del alert de guardado fallido.
-    const planEnConflicto = conflictosNombre.some(c => c.pIdx === pIdx);
+    const planEnConflicto = conflictosNombre.some(c => c.pIdx === pIdx) || planesMalos.includes(pIdx);
     html += `
     <details ${planEnConflicto ? 'open' : ''} style="background:#f1f5f9; border:2px solid #cbd5e1; border-radius:12px; padding:15px; margin-bottom:20px;"><summary style="font-weight:bold; cursor:pointer; font-size:1.1rem; color:var(--dark);">👉 Desplegar/Ocultar: ${escapeHtml(plan.nombre)}</summary><div style="margin-top: 15px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; border-bottom:2px solid #94a3b8; padding-bottom:10px; flex-wrap:wrap; gap:10px;">
-            <input type="text" id="cfg-plan-nom-${pIdx}" value="${escapeHtml(plan.nombre)}" style="margin:0; font-size:1.2rem; font-weight:bold; color:var(--dark); border:1px solid transparent; background:transparent; max-width:250px;">
+            <input type="text" id="cfg-plan-nom-${pIdx}" value="${escapeHtml(plan.nombre)}" class="cfg-plan-nom-input${planesMalos.includes(pIdx) ? ' cfg-nom-dup' : ''}" onchange="revalidarNombresConfig()">
             <div style="display:flex; gap:8px;">
                 <button class="primary icon-btn" style="background:var(--adu);" onclick="adminAddService(${pIdx})">+ Servicio al ${escapeHtml(plan.nombre)}</button>
                 <button class="danger icon-btn" onclick="adminRemovePlan(${pIdx})">Borrar Plan</button>
             </div>
-        </div>`;
+        </div>
+        <p class="cfg-nom-aviso" id="cfg-plan-aviso-${pIdx}" ${planesMalos.includes(pIdx) ? '' : 'hidden'}>${escapeHtml(mensajeConflictoNombre({ tipo: 'plan', nombre: plan.nombre }))}</p>`;
     
     if (plan.servicios.length === 0) {
         html += `<p style="color:#64748b; font-size:0.85rem; font-style:italic; padding-bottom:10px;">No hay servicios en este plan.</p>`;
@@ -3380,10 +3460,10 @@ function renderAdminAjustes() {
         html += `
         <div class="cfg-card" id="cfg-card-${pIdx}-${i}" style="border-left: 4px solid ${svc.color || 'var(--dark)'};">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; border-bottom:1px solid #e2e8f0; padding-bottom:10px;">
-             <input type="text" id="cfg-nom-${pIdx}-${i}" value="${escapeHtml(svc.nombre)}" class="cfg-nom-input${svcEnConflicto(pIdx, i) ? ' cfg-nom-dup' : ''}">
+             <input type="text" id="cfg-nom-${pIdx}-${i}" value="${escapeHtml(svc.nombre)}" class="cfg-nom-input${svcEnConflicto(pIdx, i) ? ' cfg-nom-dup' : ''}" onchange="revalidarNombresConfig()">
              <button class="danger icon-btn" onclick="adminRemoveService(${pIdx}, ${i})">Borrar Servicio 🗑️</button>
           </div>
-          ${svcEnConflicto(pIdx, i) ? `<p class="cfg-nom-aviso">⚠️ Este nombre está repetido (o vacío) dentro de ${escapeHtml(plan.nombre)}. Todo se busca por nombre, así que solo el primero sería alcanzable: cámbialo antes de guardar.</p>` : ''}
+          <p class="cfg-nom-aviso" id="cfg-nom-aviso-${pIdx}-${i}" ${svcEnConflicto(pIdx, i) ? '' : 'hidden'}>${escapeHtml(mensajeConflictoNombre(conflictoDe(pIdx, i) || { tipo: 'duplicado', nombre: svc.nombre }))}</p>
 
           <div style="display:flex; gap:15px; flex-wrap:wrap; margin-bottom:15px;">
              <div style="flex:1; min-width:120px;">
