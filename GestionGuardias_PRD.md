@@ -2,7 +2,7 @@
 **Versión:** 1.5  
 **Estado:** Funcionalidad core cerrada — rediseño visual en curso (§16.2)  
 **Audiencia:** Engineering Lead, desarrolladores, diseñadores  
-**Última actualización:** 7 de agosto de 2026
+**Última actualización:** 24 de agosto de 2026
 
 ---
 
