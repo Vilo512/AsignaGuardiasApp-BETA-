@@ -8,12 +8,7 @@ Esto **no** es la lista de tareas pendientes — esa vive en el §9 del handover
 
 Acabar lo que hay entre manos manda sobre lo nuevo, aunque lo nuevo sea mejor idea. Pero la posición no es "al final" por inercia: va **detrás del punto que ya vaya a abrir el mismo motor**, porque abrir un motor dos veces se paga dos veces. Solo si ninguno lo abre, final de cola.
 
-## Triaje — las cuatro preguntas
-
-1. **¿Llega tarde?** ¿Era de un punto ya cerrado? Entonces implica reabrir algo ya validado.
-2. **¿Qué impacto tiene?** Motor a reabrir · lógica ya escrita que se retoca · efecto sobre el render (en móvil).
-3. **¿Dónde es más barato meterla?** Junto al punto que ya toca ese motor.
-4. **¿Debería morir?** Redundante con algo existente o encolado · *function bloat*: superficie nueva para un caso marginal. Se propone con motivo; decide el usuario.
+Las cuatro preguntas del triaje están en `CLAUDE.md` §Ideas nuevas a media sesión. Aquí solo vive el formato de la ficha.
 
 ## Formato
 
